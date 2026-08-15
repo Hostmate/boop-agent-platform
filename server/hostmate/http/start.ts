@@ -1,9 +1,18 @@
 import { createAgentPlatformRuntimeApp } from "./runtime-app.js";
+import type { OpenRouterReasoningEffort } from "../runtime/openrouter-adapter.js";
 
 function required(name: string): string {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`${name} is required`);
   return value;
+}
+
+function optionalReasoningEffort(name: string): OpenRouterReasoningEffort | undefined {
+  const value = process.env[name]?.trim();
+  if (!value) return undefined;
+  const allowed: readonly string[] = ["max", "xhigh", "high", "medium", "low", "minimal", "none"];
+  if (!allowed.includes(value)) throw new Error(`${name} must be one of ${allowed.join(", ")}`);
+  return value as OpenRouterReasoningEffort;
 }
 
 const port = Number(process.env.AGENT_PLATFORM_RUNTIME_PORT ?? 4310);
@@ -33,6 +42,7 @@ const app = createAgentPlatformRuntimeApp({
   hostmateApiBaseUrl,
   openRouterApiKey: required("OPENROUTER_API_KEY"),
   model: required("AGENT_PLATFORM_CRM_MODEL"),
+  reasoningEffort: optionalReasoningEffort("AGENT_PLATFORM_REASONING_EFFORT"),
   fallbackModels: process.env.AGENT_PLATFORM_CRM_FALLBACK_MODELS?.split(",").map((value) => value.trim()).filter(Boolean),
   maxConcurrentTurns: Number(process.env.AGENT_PLATFORM_MAX_CONCURRENT_TURNS ?? 8),
   issuer: required('AGENT_PLATFORM_JWT_ISSUER'),

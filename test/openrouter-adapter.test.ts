@@ -57,6 +57,24 @@ describe("production-oriented OpenRouterAdapter", () => {
     expect(requests[0]).not.toHaveProperty("model");
   });
 
+  it("sends OpenRouter max reasoning without widening the Codex runtime effort contract", async () => {
+    let body: Record<string, unknown> | undefined;
+    const adapter = new OpenRouterAdapter({
+      apiKey: "test", maxTransportRetries: 0,
+      fetch: vi.fn(async (_url, init) => {
+        body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return sse([{ model: "deepseek/deepseek-v4-flash-0731", choices: [{ delta: { content: "ok" }, finish_reason: "stop" }], usage: {} }]);
+      }),
+    });
+    await adapter.run({ prompt: "x", systemPrompt: "x", model: "deepseek/deepseek-v4-flash-0731", mode: "execution", tools: [] }, {
+      budget, reasoningEffort: "max",
+    });
+    expect(body).toMatchObject({
+      model: "deepseek/deepseek-v4-flash-0731",
+      reasoning: { effort: "max" },
+    });
+  });
+
   it("normalizes provider errors", async () => {
     const adapter = new OpenRouterAdapter({
       apiKey: "test", maxTransportRetries: 0,

@@ -11,7 +11,7 @@ import { HostmateHttpLeadVisitsPort } from "../product-tools/visits/hostmate-htt
 import { HostmateHttpVisitDetailPort } from "../product-tools/visits/hostmate-http-visit-detail-port.js";
 import { HostmateHttpPropertySearchPort } from "../product-tools/property/hostmate-http-property-search-port.js";
 import { HostmateHttpPropertyDetailPort } from "../product-tools/property/hostmate-http-property-detail-port.js";
-import { OpenRouterAdapter } from "../runtime/openrouter-adapter.js";
+import { OpenRouterAdapter, type OpenRouterReasoningEffort } from "../runtime/openrouter-adapter.js";
 import { CrmSearchLeadsVerticalSlice } from "../vertical-slices/crm-search-leads.js";
 import { PropertySearchPropertiesVerticalSlice } from "../vertical-slices/property-search-properties.js";
 import { classifyInteractionTurn } from "../interaction/turn-classifier.js";
@@ -34,6 +34,7 @@ export type AgentPlatformRuntimeConfig = Readonly<{
   openRouterApiKey: string;
   model: string;
   fallbackModels?: readonly string[];
+  reasoningEffort?: OpenRouterReasoningEffort;
   maxConcurrentTurns?: number;
   isReady?: () => boolean;
   issuer?: string;
@@ -76,7 +77,7 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
         new HostmateHttpPropertySearchPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
         new HostmateHttpPropertyDetailPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
         new OpenRouterAdapter({ apiKey: config.openRouterApiKey, appName: "Hostmate Agent Platform" }),
-        { model: config.model, fallbackModels: config.fallbackModels },
+        { model: config.model, fallbackModels: config.fallbackModels, reasoningEffort: config.reasoningEffort },
       );
       const result = await slice.execute(actor, { ...input, requestId: context.requestId, abortController: context.abortController });
       return { ...result, controlPlaneWrites: convex.writeMetrics() };
@@ -88,7 +89,7 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
       new HostmateHttpLeadVisitsPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
       new HostmateHttpVisitDetailPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
       new OpenRouterAdapter({ apiKey: config.openRouterApiKey, appName: "Hostmate Agent Platform" }),
-      { model: config.model, fallbackModels: config.fallbackModels },
+      { model: config.model, fallbackModels: config.fallbackModels, reasoningEffort: config.reasoningEffort },
     );
     const result = await slice.execute(actor, { ...input, requestId: context.requestId, abortController: context.abortController });
     return { ...result, controlPlaneWrites: convex.writeMetrics() };

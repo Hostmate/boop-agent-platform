@@ -23,13 +23,14 @@ import {
   type PropertySearchPort,
   type PropertySearchPropertiesOutput,
 } from "../product-tools/property/search-properties.js";
-import { OpenRouterAdapter, OpenRouterRuntimeError, type OpenRouterRuntimeResult } from "../runtime/openrouter-adapter.js";
+import { OpenRouterAdapter, OpenRouterRuntimeError, type OpenRouterReasoningEffort, type OpenRouterRuntimeResult } from "../runtime/openrouter-adapter.js";
 import { SkillRegistry } from "../skills/registry.js";
 import { ProductToolRegistry } from "../tools/registry.js";
 
 export type PropertySearchPropertiesSliceConfig = Readonly<{
   model: string;
   fallbackModels?: readonly string[];
+  reasoningEffort?: OpenRouterReasoningEffort;
   timeoutMs?: number;
   maxCostUsd?: number;
 }>;
@@ -339,7 +340,7 @@ export class PropertySearchPropertiesVerticalSlice {
     let runtime: OpenRouterRuntimeResult | undefined;
     try {
       await event("tool.requested", { toolId: PROPERTY_SEARCH_PROPERTIES_TOOL_ID, version: 1 });
-      await event("model.started", { requestedModel: this.config.model, provider: "openrouter", inference: 1 });
+      await event("model.started", { requestedModel: this.config.model, provider: "openrouter", reasoningEffort: this.config.reasoningEffort, inference: 1 });
       runtime = await this.runtime.run({
         prompt: message, abortController: input.abortController,
         systemPrompt: [
@@ -358,6 +359,7 @@ export class PropertySearchPropertiesVerticalSlice {
         }),
       }, {
         fallbackModels: this.config.fallbackModels,
+        reasoningEffort: this.config.reasoningEffort,
         budget: { timeoutMs: this.config.timeoutMs ?? 30_000, maxToolRounds: 0, maxCostUsd: this.config.maxCostUsd ?? 0.05 },
         parallelToolCalls: false, toolChoice: "required", stopAfterToolResult: true,
         metadata: { interaction_run_id: interactionRunId, execution_run_id: executionRunId, request_id: input.requestId ?? "unknown", profile: "property", plan: "search" },

@@ -40,13 +40,14 @@ import {
   type GetVisitOutput,
   type VisitDetailPort,
 } from "../product-tools/visits/get-visit.js";
-import { OpenRouterAdapter, OpenRouterRuntimeError, type OpenRouterRuntimeResult } from "../runtime/openrouter-adapter.js";
+import { OpenRouterAdapter, OpenRouterRuntimeError, type OpenRouterReasoningEffort, type OpenRouterRuntimeResult } from "../runtime/openrouter-adapter.js";
 import { SkillRegistry } from "../skills/registry.js";
 import { ProductToolRegistry } from "../tools/registry.js";
 
 export type CrmSearchLeadsSliceConfig = Readonly<{
   model: string;
   fallbackModels?: readonly string[];
+  reasoningEffort?: OpenRouterReasoningEffort;
   timeoutMs?: number;
   maxCostUsd?: number;
 }>;
@@ -420,7 +421,7 @@ export class CrmSearchLeadsVerticalSlice {
     try {
       if (plan.startsWith("search")) {
         await event("tool.requested", { toolId: CRM_SEARCH_LEADS_TOOL_ID, version: 1 });
-        await event("model.started", { requestedModel: this.config.model, provider: "openrouter", inference: 1 });
+        await event("model.started", { requestedModel: this.config.model, provider: "openrouter", reasoningEffort: this.config.reasoningEffort, inference: 1 });
         runtime = await this.runtime.run({
           prompt: message,
           abortController: input.abortController,
@@ -435,6 +436,7 @@ export class CrmSearchLeadsVerticalSlice {
           onToolResult: async (toolName) => await event("tool.completed", { toolName, service: "lead.service.list", latencyMs: searchOutput?.telemetry?.latencyMs }),
         }, {
           fallbackModels: this.config.fallbackModels,
+          reasoningEffort: this.config.reasoningEffort,
           budget: { timeoutMs: this.config.timeoutMs ?? 30_000, maxToolRounds: 0, maxCostUsd: this.config.maxCostUsd ?? 0.05 },
           parallelToolCalls: false, toolChoice: "required", stopAfterToolResult: true,
           metadata: { interaction_run_id: interactionRunId, execution_run_id: executionRunId, request_id: input.requestId ?? 'unknown', profile: "crm", plan },

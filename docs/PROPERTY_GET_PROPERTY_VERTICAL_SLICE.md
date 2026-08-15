@@ -1,6 +1,9 @@
 # Property Get Property Vertical Slice
 
 Estado: `GO` para uso interno en staging. Capability read-only: `property.get_property.v1`.
+Las inferencias usan OpenRouter `deepseek/deepseek-v4-flash-0731` con
+`reasoning.effort=max`; los recorridos deterministas siguen enviando cero
+peticiones al proveedor.
 
 ## 1. Auditoría de detalle Property
 

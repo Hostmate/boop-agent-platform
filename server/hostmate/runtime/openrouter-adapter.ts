@@ -45,6 +45,8 @@ export type OpenRouterBudget = Readonly<{
   maxCostUsd?: number;
 }>;
 
+export type OpenRouterReasoningEffort = "max" | "xhigh" | "high" | "medium" | "low" | "minimal" | "none";
+
 export type OpenRouterRunOptions = Readonly<{
   fallbackModels?: readonly string[];
   provider?: OpenRouterProviderPolicy;
@@ -53,6 +55,8 @@ export type OpenRouterRunOptions = Readonly<{
   toolChoice?: "auto" | "none" | "required";
   maxTokens?: number;
   temperature?: number;
+  /** OpenRouter-only reasoning level. Kept separate from Codex runtime effort. */
+  reasoningEffort?: OpenRouterReasoningEffort;
   metadata?: Record<string, string | number | boolean>;
   sessionId?: string;
   /** End deterministically after executing the requested tools; avoids a cosmetic second model call. */
@@ -324,7 +328,9 @@ export class OpenRouterAdapter {
         ...(provider.dataCollection ? { data_collection: provider.dataCollection } : {}),
       },
       parallel_tool_calls: options.parallelToolCalls ?? false,
-      ...(request.reasoningEffort ? { reasoning: { effort: request.reasoningEffort } } : {}),
+      ...((options.reasoningEffort ?? request.reasoningEffort)
+        ? { reasoning: { effort: options.reasoningEffort ?? request.reasoningEffort } }
+        : {}),
       ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
       ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
       ...(options.metadata ? { metadata: options.metadata } : {}),

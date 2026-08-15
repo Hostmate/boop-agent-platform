@@ -121,7 +121,8 @@ npm run lint --workspace=@re/web && npm run build --workspace=@re/web
 
 HOSTMATE_REPO_PATH=../Plataforma-Real-Estate-agent-platform-integration \
 HOSTMATE_ENV_PATH=../Plataforma-Real-Estate/v2/.env \
-AGENT_PLATFORM_CRM_MODEL=openai/gpt-4.1-mini \
+AGENT_PLATFORM_CRM_MODEL=deepseek/deepseek-v4-flash-0731 \
+AGENT_PLATFORM_REASONING_EFFORT=max \
 npm run e2e:agent-platform-read-regression
 ```
 
