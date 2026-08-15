@@ -271,7 +271,7 @@ export class CrmSearchLeadsVerticalSlice {
     if (!config.model.trim()) throw new Error("CRM read model must come from runtime configuration");
   }
 
-  async execute(actor: ActorContext, input: { conversationId: string; message: string; selectedEntityRef?: EntityRef }): Promise<CrmSearchLeadsTurnResult> {
+  async execute(actor: ActorContext, input: { conversationId: string; message: string; selectedEntityRef?: EntityRef; requestId?: string; abortController?: AbortController }): Promise<CrmSearchLeadsTurnResult> {
     const message = input.message.trim();
     if (!message || message.length > 500) throw new Error("Message must contain between 1 and 500 characters");
     const interactionRunId = randomUUID();
@@ -418,6 +418,7 @@ export class CrmSearchLeadsVerticalSlice {
         await event("model.started", { requestedModel: this.config.model, provider: "openrouter", inference: 1 });
         runtime = await this.runtime.run({
           prompt: message,
+          abortController: input.abortController,
           systemPrompt: [
             "You are a scoped CRM lead lookup execution agent.",
             "Call crm.search_leads exactly once. Infer only filters explicitly supported by its schema.",
@@ -431,7 +432,7 @@ export class CrmSearchLeadsVerticalSlice {
           fallbackModels: this.config.fallbackModels,
           budget: { timeoutMs: this.config.timeoutMs ?? 30_000, maxToolRounds: 0, maxCostUsd: this.config.maxCostUsd ?? 0.05 },
           parallelToolCalls: false, toolChoice: "required", stopAfterToolResult: true,
-          metadata: { interaction_run_id: interactionRunId, execution_run_id: executionRunId, profile: "crm", plan },
+          metadata: { interaction_run_id: interactionRunId, execution_run_id: executionRunId, request_id: input.requestId ?? 'unknown', profile: "crm", plan },
           sessionId: actor.sessionId,
           onEvent: async (runtimeEvent) => {
             if (runtimeEvent.type === "usage" || runtimeEvent.type === "tool_call" || runtimeEvent.type === "tool_result") return;

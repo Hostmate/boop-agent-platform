@@ -10,6 +10,8 @@ import { HostmateHttpLeadVisitsPort } from "../product-tools/visits/hostmate-htt
 import { HostmateHttpVisitDetailPort } from "../product-tools/visits/hostmate-http-visit-detail-port.js";
 import { OpenRouterAdapter } from "../runtime/openrouter-adapter.js";
 import { CrmSearchLeadsVerticalSlice } from "../vertical-slices/crm-search-leads.js";
+import { createActorTokenVerifier, type VerifiedActorClaims } from '../security/actor-token-verifier.js';
+import { randomUUID } from 'node:crypto';
 
 const requestSchema = z.object({
   conversationId: z.string().uuid(),
@@ -18,7 +20,8 @@ const requestSchema = z.object({
 }).strict();
 
 type RuntimeTurnRequest = z.infer<typeof requestSchema>;
-type RuntimeTurnExecutor = (token: string, input: RuntimeTurnRequest) => Promise<unknown>;
+type RuntimeRequestContext = { requestId: string; abortController: AbortController };
+type RuntimeTurnExecutor = (token: string, input: RuntimeTurnRequest, context: RuntimeRequestContext) => Promise<unknown>;
 
 export type AgentPlatformRuntimeConfig = Readonly<{
   convexUrl: string;
@@ -28,6 +31,10 @@ export type AgentPlatformRuntimeConfig = Readonly<{
   fallbackModels?: readonly string[];
   maxConcurrentTurns?: number;
   isReady?: () => boolean;
+  issuer?: string;
+  audience?: string;
+  jwksUrl?: string;
+  verifyActorToken?: (token: string) => Promise<VerifiedActorClaims>;
   /** Test seam; production uses the authority-bound implementation below. */
   executeTurn?: RuntimeTurnExecutor;
 }>;
@@ -37,22 +44,34 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
   const capabilities = ["crm.search_leads.v1", "crm.get_lead_context.v1", "visits.list_lead_visits.v1", "visits.get_visit.v1"] as const;
   const maxConcurrentTurns = Math.max(1, Math.floor(config.maxConcurrentTurns ?? 8));
   let activeTurns = 0;
-  const executeTurn: RuntimeTurnExecutor = config.executeTurn ?? (async (token, input) => {
+  const verifyActorToken = config.verifyActorToken ?? (
+    config.issuer && config.audience && config.jwksUrl
+      ? createActorTokenVerifier({ issuer: config.issuer, audience: config.audience, jwksUrl: config.jwksUrl })
+      : undefined
+  );
+  if (!config.executeTurn && !verifyActorToken) throw new Error('Runtime JWT issuer, audience and JWKS URL are required');
+  const executeTurn: RuntimeTurnExecutor = config.executeTurn ?? (async (token, input, context) => {
+    const claims = await verifyActorToken!(token);
     // Convex verifies the RS256 identity. A fresh client per request prevents
     // credentials from bleeding between tenants.
     const convex = new AuthenticatedConvexHttpClient(config.convexUrl, token);
     const trusted = await convex.currentActor();
+    if (trusted.tenantId !== claims.tenant_id || trusted.userId !== claims.user_id
+      || trusted.sessionId !== claims.session_id || trusted.permissionsVersion !== claims.permissions_version) {
+      throw new Error('ACTOR_CONTEXT_VERIFICATION_MISMATCH');
+    }
     const actor = createActorContext({ ...trusted, isSuperAdmin: trusted.role === "superadmin" });
     const slice = new CrmSearchLeadsVerticalSlice(
       new ConvexControlPlaneRepository(convex),
-      new HostmateHttpLeadSearchPort(config.hostmateApiBaseUrl, token),
-      new HostmateHttpLeadContextPort(config.hostmateApiBaseUrl, token),
-      new HostmateHttpLeadVisitsPort(config.hostmateApiBaseUrl, token),
-      new HostmateHttpVisitDetailPort(config.hostmateApiBaseUrl, token),
+      new HostmateHttpLeadSearchPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
+      new HostmateHttpLeadContextPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
+      new HostmateHttpLeadVisitsPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
+      new HostmateHttpVisitDetailPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
       new OpenRouterAdapter({ apiKey: config.openRouterApiKey, appName: "Hostmate Agent Platform" }),
       { model: config.model, fallbackModels: config.fallbackModels },
     );
-    return await slice.execute(actor, input);
+    const result = await slice.execute(actor, { ...input, requestId: context.requestId, abortController: context.abortController });
+    return { ...result, controlPlaneWrites: convex.writeMetrics() };
   });
   app.disable("x-powered-by");
   app.use(express.json({ limit: "16kb" }));
@@ -67,21 +86,39 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
     if (!authorization?.startsWith("Bearer ")) return res.status(401).json({ success: false, error: "UNAUTHENTICATED" });
     const parsed = requestSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ success: false, error: "INVALID_REQUEST", details: parsed.error.flatten() });
-    if (!(config.isReady?.() ?? true)) return res.status(503).json({ success: false, error: "RUNTIME_NOT_READY" });
+    const requestId = typeof req.headers['x-request-id'] === 'string' && req.headers['x-request-id'].length <= 128
+      ? req.headers['x-request-id']
+      : randomUUID();
+    res.setHeader('x-request-id', requestId);
+    if (!(config.isReady?.() ?? true)) {
+      process.stderr.write(`${JSON.stringify({ component: "agent-platform-runtime", event: "turn_rejected", requestId, reason: "not_ready" })}\n`);
+      return res.status(503).json({ success: false, error: "RUNTIME_NOT_READY" });
+    }
     if (activeTurns >= maxConcurrentTurns) {
       res.setHeader("retry-after", "1");
+      process.stderr.write(`${JSON.stringify({ component: "agent-platform-runtime", event: "turn_rejected", requestId, reason: "busy", activeTurns, maxConcurrentTurns })}\n`);
       return res.status(503).json({ success: false, error: "RUNTIME_BUSY" });
     }
     const token = authorization.slice(7);
+    const abortController = new AbortController();
+    res.once('close', () => {
+      if (!res.writableEnded) abortController.abort(new Error('client_disconnected'));
+    });
     activeTurns += 1;
     try {
-      const result = await executeTurn(token, parsed.data);
+      const result = await executeTurn(token, parsed.data, { requestId, abortController });
+      const runIds = result && typeof result === 'object' ? result as { interactionRunId?: unknown; executionRunId?: unknown } : {};
+      process.stdout.write(`${JSON.stringify({
+        component: "agent-platform-runtime", event: "turn_completed", requestId,
+        interactionRunId: typeof runIds.interactionRunId === 'string' ? runIds.interactionRunId : undefined,
+        executionRunId: typeof runIds.executionRunId === 'string' ? runIds.executionRunId : undefined,
+      })}\n`);
       res.setHeader("cache-control", "no-store");
       return res.json({ success: true, data: result });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const unauthenticated = /UNAUTHENTICATED|JWT|identity/i.test(message);
-      process.stderr.write(`${JSON.stringify({ component: "agent-platform-runtime", event: "turn_failed", kind: error instanceof Error ? error.name : "unknown", unauthenticated })}\n`);
+      process.stderr.write(`${JSON.stringify({ component: "agent-platform-runtime", event: "turn_failed", requestId, kind: error instanceof Error ? error.name : "unknown", unauthenticated })}\n`);
       return res.status(unauthenticated ? 401 : 500).json({ success: false, error: unauthenticated ? "UNAUTHENTICATED" : "INTERNAL_ERROR" });
     } finally {
       activeTurns -= 1;

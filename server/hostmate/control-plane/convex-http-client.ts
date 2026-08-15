@@ -5,6 +5,7 @@ import type { ConvexControlPlaneClient } from "./convex-control-plane-repository
 
 export class AuthenticatedConvexHttpClient implements ConvexControlPlaneClient {
   private readonly client: ConvexHttpClient;
+  private readonly mutationCounts = new Map<string, number>();
 
   constructor(url: string, token: string) {
     this.client = new ConvexHttpClient(url);
@@ -12,6 +13,7 @@ export class AuthenticatedConvexHttpClient implements ConvexControlPlaneClient {
   }
 
   mutation<T>(name: string, args: Record<string, unknown>): Promise<T> {
+    this.mutationCounts.set(name, (this.mutationCounts.get(name) ?? 0) + 1);
     return this.client.mutation(makeFunctionReference<"mutation">(name), args) as Promise<T>;
   }
 
@@ -21,5 +23,17 @@ export class AuthenticatedConvexHttpClient implements ConvexControlPlaneClient {
 
   currentActor(): Promise<ActorContextInput> {
     return this.query<ActorContextInput>("agentPlatform:currentActor", {});
+  }
+
+  writeMetrics(): { mutations: Record<string, number>; estimatedDocumentWrites: number } {
+    const mutations = Object.fromEntries(this.mutationCounts);
+    const weights: Record<string, number> = {
+      'agentPlatform:appendMessage': 2,
+    };
+    const estimatedDocumentWrites = [...this.mutationCounts].reduce(
+      (total, [name, count]) => total + count * (weights[name] ?? 1),
+      0,
+    );
+    return { mutations, estimatedDocumentWrites };
   }
 }

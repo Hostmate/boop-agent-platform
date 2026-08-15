@@ -1,4 +1,3 @@
-import "dotenv/config";
 import { createAgentPlatformRuntimeApp } from "./runtime-app.js";
 
 function required(name: string): string {
@@ -9,21 +8,44 @@ function required(name: string): string {
 
 const port = Number(process.env.AGENT_PLATFORM_RUNTIME_PORT ?? 4310);
 const shutdownTimeoutMs = Number(process.env.AGENT_PLATFORM_SHUTDOWN_TIMEOUT_MS ?? 55_000);
-let ready = true;
+const convexUrl = process.env.CONVEX_URL?.trim() || required("VITE_CONVEX_URL");
+const hostmateApiBaseUrl = required("HOSTMATE_API_BASE_URL");
+const jwksUrl = required('AGENT_PLATFORM_JWKS_URL');
+let accepting = true;
+let dependenciesReady = false;
+async function probeDependencies(): Promise<void> {
+  try {
+    const [jwks, convex, hostmate] = await Promise.all([
+      fetch(jwksUrl, { signal: AbortSignal.timeout(5_000) }),
+      fetch(convexUrl, { method: 'HEAD', signal: AbortSignal.timeout(5_000) }),
+      fetch(`${hostmateApiBaseUrl.replace(/\/$/, '')}/health`, { signal: AbortSignal.timeout(5_000) }),
+    ]);
+    dependenciesReady = jwks.ok && convex.status < 500 && hostmate.status < 500;
+  } catch {
+    dependenciesReady = false;
+  }
+}
+await probeDependencies();
+const probeTimer = setInterval(() => void probeDependencies(), 5_000);
+probeTimer.unref();
 const app = createAgentPlatformRuntimeApp({
-  convexUrl: process.env.CONVEX_URL?.trim() || required("VITE_CONVEX_URL"),
-  hostmateApiBaseUrl: required("HOSTMATE_API_BASE_URL"),
+  convexUrl,
+  hostmateApiBaseUrl,
   openRouterApiKey: required("OPENROUTER_API_KEY"),
   model: required("AGENT_PLATFORM_CRM_MODEL"),
   fallbackModels: process.env.AGENT_PLATFORM_CRM_FALLBACK_MODELS?.split(",").map((value) => value.trim()).filter(Boolean),
   maxConcurrentTurns: Number(process.env.AGENT_PLATFORM_MAX_CONCURRENT_TURNS ?? 8),
-  isReady: () => ready,
+  issuer: required('AGENT_PLATFORM_JWT_ISSUER'),
+  audience: required('AGENT_PLATFORM_JWT_AUDIENCE'),
+  jwksUrl,
+  isReady: () => accepting && dependenciesReady,
 });
 const server = app.listen(port, "0.0.0.0", () => process.stdout.write(`Hostmate Agent Platform runtime listening on ${port}\n`));
 
 function shutdown(signal: NodeJS.Signals): void {
-  if (!ready) return;
-  ready = false;
+  if (!accepting) return;
+  accepting = false;
+  clearInterval(probeTimer);
   process.stdout.write(`${JSON.stringify({ component: "agent-platform-runtime", event: "shutdown_started", signal })}\n`);
   const timeout = setTimeout(() => {
     server.closeAllConnections();

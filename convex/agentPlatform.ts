@@ -302,3 +302,54 @@ export const listUsage = query({
       .order("asc").take(limit);
   },
 });
+
+const RETENTION_MS = {
+  messages_context_refs: 180 * 24 * 60 * 60 * 1_000,
+  runs_attempts: 90 * 24 * 60 * 60 * 1_000,
+  detailed_events: 30 * 24 * 60 * 60 * 1_000,
+  raw_usage: 90 * 24 * 60 * 60 * 1_000,
+  terminal_lease_detail: 7 * 24 * 60 * 60 * 1_000,
+} as const;
+
+function dryRunRow(tenantId: string, type: keyof typeof RETENTION_MS, values: unknown[], timestamps: number[]) {
+  const eligibleTimestamps = timestamps.filter(Number.isFinite);
+  return {
+    tenantId,
+    type,
+    count: values.length,
+    oldest: eligibleTimestamps.length ? Math.min(...eligibleTimestamps) : undefined,
+    newest: eligibleTimestamps.length ? Math.max(...eligibleTimestamps) : undefined,
+    estimatedBytes: values.reduce<number>((total, value) => total + new TextEncoder().encode(JSON.stringify(value)).byteLength, 0),
+  };
+}
+
+/** Read-only retention projection. It never deletes or patches data. */
+export const retentionDryRun = query({
+  args: { now: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const actor = await requireAgentPlatformActor(ctx);
+    if (actor.role !== 'admin' && actor.role !== 'superadmin') throw new ConvexError('RETENTION_ADMIN_REQUIRED');
+    const now = args.now ?? Date.now();
+    const [messages, runs, attempts, events, usage] = await Promise.all([
+      ctx.db.query('agentPlatformMessages').withIndex('by_tenant_conversation_sequence', (q) => q.eq('tenantId', actor.tenantId)).collect(),
+      ctx.db.query('agentPlatformRuns').withIndex('by_tenant_created', (q) => q.eq('tenantId', actor.tenantId)).collect(),
+      ctx.db.query('agentPlatformAttempts').withIndex('by_tenant_status_lease', (q) => q.eq('tenantId', actor.tenantId)).collect(),
+      ctx.db.query('agentPlatformEvents').withIndex('by_tenant_occurred', (q) => q.eq('tenantId', actor.tenantId)).collect(),
+      ctx.db.query('agentPlatformUsage').withIndex('by_tenant_created', (q) => q.eq('tenantId', actor.tenantId)).collect(),
+    ]);
+    const oldMessages = messages.filter((row) => row.createdAt < now - RETENTION_MS.messages_context_refs);
+    const oldRuns = runs.filter((row) => row.createdAt < now - RETENTION_MS.runs_attempts);
+    const oldRunIds = new Set(oldRuns.map((row) => row.runId));
+    const oldAttempts = attempts.filter((row) => oldRunIds.has(row.runId));
+    const oldEvents = events.filter((row) => row.occurredAt < now - RETENTION_MS.detailed_events);
+    const oldUsage = usage.filter((row) => row.createdAt < now - RETENTION_MS.raw_usage);
+    const terminalLease = attempts.filter((row) => row.completedAt !== undefined && row.completedAt < now - RETENTION_MS.terminal_lease_detail);
+    return [
+      dryRunRow(actor.tenantId, 'messages_context_refs', oldMessages, oldMessages.map((row) => row.createdAt)),
+      dryRunRow(actor.tenantId, 'runs_attempts', [...oldRuns, ...oldAttempts], [...oldRuns.map((row) => row.createdAt), ...oldAttempts.map((row) => row.completedAt ?? row.startedAt ?? 0)]),
+      dryRunRow(actor.tenantId, 'detailed_events', oldEvents, oldEvents.map((row) => row.occurredAt)),
+      dryRunRow(actor.tenantId, 'raw_usage', oldUsage, oldUsage.map((row) => row.createdAt)),
+      dryRunRow(actor.tenantId, 'terminal_lease_detail', terminalLease, terminalLease.map((row) => row.completedAt ?? 0)),
+    ];
+  },
+});

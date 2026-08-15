@@ -1,0 +1,24 @@
+http:
+  routers:
+    hostmate-agent-platform-staging-http:
+      rule: Host(`v2-dev.realestate.hostmate.es`) && PathPrefix(`/`)
+      entryPoints:
+        - http
+      priority: 1000
+      middlewares:
+        - redirect-to-https
+      service: hostmate-agent-platform-staging
+    hostmate-agent-platform-staging-https:
+      rule: Host(`v2-dev.realestate.hostmate.es`) && PathPrefix(`/`)
+      entryPoints:
+        - https
+      priority: 1000
+      tls:
+        certResolver: letsencrypt
+      service: hostmate-agent-platform-staging
+  services:
+    hostmate-agent-platform-staging:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: http://it_re-v2-dev:3000/
