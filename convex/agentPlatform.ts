@@ -47,7 +47,7 @@ export const createConversation = mutation({
 export const appendMessage = mutation({
   args: {
     messageId: v.string(), conversationId: v.string(), role: v.union(v.literal("user"), v.literal("assistant"), v.literal("system")),
-    contentRedacted: v.string(), blocks: v.optional(v.any()), runId: v.optional(v.string()), sequence: v.number(), createdAt: v.number(), ...expectedActorArgs,
+    contentRedacted: v.string(), blocks: v.optional(v.any()), contextRefs: v.optional(v.any()), runId: v.optional(v.string()), sequence: v.number(), createdAt: v.number(), ...expectedActorArgs,
   },
   handler: async (ctx, args) => {
     const actor = await requireAgentPlatformActor(ctx, args);
@@ -55,7 +55,12 @@ export const appendMessage = mutation({
       .withIndex("by_tenant_conversation", (q) => q.eq("tenantId", actor.tenantId).eq("conversationId", args.conversationId)).unique();
     if (!conversation) return [];
     if (conversation.ownerUserId !== actor.userId) throw new ConvexError("CONVERSATION_FORBIDDEN");
-    const value = { messageId: args.messageId, conversationId: args.conversationId, tenantId: actor.tenantId, actorUserId: actor.userId, role: args.role, contentRedacted: args.contentRedacted, sequence: args.sequence, createdAt: args.createdAt };
+    const value = {
+      messageId: args.messageId, conversationId: args.conversationId, tenantId: actor.tenantId,
+      actorUserId: actor.userId, role: args.role, contentRedacted: args.contentRedacted,
+      blocks: args.blocks, contextRefs: args.contextRefs, runId: args.runId,
+      sequence: args.sequence, createdAt: args.createdAt,
+    };
     await ctx.db.insert("agentPlatformMessages", value);
     await ctx.db.patch(conversation._id, { updatedAt: Date.now() });
     return value;

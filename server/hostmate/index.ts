@@ -14,5 +14,6 @@ export * from "./runtime/openrouter-adapter.js";
 export * from "./skills/registry.js";
 export * from "./tools/registry.js";
 export * from "./product-tools/crm/search-leads.js";
+export * from "./product-tools/crm/get-lead-context.js";
 export * from "./product-tools/crm/hostmate-http-lead-search-port.js";
 export * from "./vertical-slices/crm-search-leads.js";

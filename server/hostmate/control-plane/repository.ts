@@ -1,5 +1,6 @@
 import type { ActorContext } from "../contracts/actor-context.js";
 import type { ExecutionProfileId } from "../contracts/domain.js";
+import type { EntityRef } from "../contracts/domain.js";
 import type { AgentContentBlock } from "../contracts/execution-result.js";
 import type { AgentEvent, AgentEventInput } from "../events/contracts.js";
 import type {
@@ -27,6 +28,7 @@ export type AgentMessageRecord = Readonly<{
   role: "user" | "assistant" | "system";
   contentRedacted: string;
   blocks?: readonly AgentContentBlock[];
+  contextRefs?: readonly EntityRef[];
   runId?: string;
   sequence: number;
   createdAt: number;

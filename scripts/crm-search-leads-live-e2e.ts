@@ -5,6 +5,7 @@ import { config as loadEnv } from "dotenv";
 import { createActorContext } from "../server/hostmate/contracts/actor-context.js";
 import { ConvexControlPlaneRepository } from "../server/hostmate/control-plane/convex-control-plane-repository.js";
 import { AuthenticatedConvexHttpClient } from "../server/hostmate/control-plane/convex-http-client.js";
+import type { LeadContextPort } from "../server/hostmate/product-tools/crm/get-lead-context.js";
 import type { CrmSearchLeadsInput, LeadSearchPort } from "../server/hostmate/product-tools/crm/search-leads.js";
 import { OpenRouterAdapter } from "../server/hostmate/runtime/openrouter-adapter.js";
 import { CrmSearchLeadsVerticalSlice } from "../server/hostmate/vertical-slices/crm-search-leads.js";
@@ -73,11 +74,19 @@ async function main() {
 
     const leadServicePath = "../../Plataforma-Real-Estate-boop-spike/v2/apps/api/src/services/lead.service.ts";
     const leadService = await import(leadServicePath) as { list: (tenantId: number, filters: any, isSuperAdmin?: boolean, userId?: number) => Promise<any> };
-    const seed = await leadService.list(tenantId, { page: 1, limit: 10 }, false, userId);
-    const target = seed.items.find((lead: any) => typeof lead.client_phone === "string" && lead.client_phone.replace(/\D/g, "").length >= 7)
-      ?? seed.items.find((lead: any) => typeof lead.client_email === "string" && lead.client_email.includes("@"))
-      ?? seed.items.find((lead: any) => typeof lead.client_name === "string" && lead.client_name.trim().length >= 2) as any;
-    if (!target) throw new Error(`Tenant ${tenantId} has no searchable local/real lead for E2E`);
+    const seed = await leadService.list(tenantId, { page: 1, limit: 50 }, false, userId);
+    let target: any;
+    let targetQuery = "";
+    for (const lead of seed.items as any[]) {
+      const candidates = [lead.client_phone, lead.client_email, lead.client_name]
+        .filter((value): value is string => typeof value === "string" && value.trim().length >= 2);
+      for (const candidate of candidates) {
+        const probe = await leadService.list(tenantId, { page: 1, limit: 2, search: candidate.trim() }, false, userId);
+        if (probe.total === 1) { target = lead; targetQuery = candidate.trim(); break; }
+      }
+      if (target) break;
+    }
+    if (!target || !targetQuery) throw new Error(`Tenant ${tenantId} has no uniquely searchable real lead for composed E2E`);
 
     let executedInput: CrmSearchLeadsInput | undefined;
     const directPort: LeadSearchPort = {
@@ -85,8 +94,22 @@ async function main() {
         executedInput = input;
         if (actor.tenantId !== String(tenantId)) throw new Error("E2E_ACTOR_TENANT_MISMATCH");
         const serviceStarted = performance.now();
-        const result = await leadService.list(tenantId, { page: input.page, limit: input.limit, search: input.query, prop_city: input.city, status: input.status }, false, userId);
+        const result = await leadService.list(tenantId, {
+          page: input.page, limit: input.limit, search: input.query, prop_city: input.city, status: input.status,
+          assigned_agent_id: actor.role === "agent" ? Number(actor.userId) : undefined,
+        }, false, userId);
         return { ...result, telemetry: { service: "lead.service.list", latencyMs: Math.round((performance.now() - serviceStarted) * 100) / 100 } };
+      },
+    };
+    const contextServicePath = "../../Plataforma-Real-Estate-boop-spike/v2/apps/api/src/services/agent-platform-lead-context.service.ts";
+    const contextService = await import(contextServicePath) as { getLeadContext: (actor: { tenantId: number; userId: number; role: "agent" | "admin" | "superadmin" }, leadId: number) => Promise<any> };
+    const directContextPort: LeadContextPort = {
+      getContext: async (seenActor, input) => {
+        const serviceStarted = performance.now();
+        const result = await contextService.getLeadContext({
+          tenantId: Number(seenActor.tenantId), userId: Number(seenActor.userId), role: seenActor.role,
+        }, Number(input.lead.id));
+        return { ...result, telemetry: { ...result.telemetry, latencyMs: Math.round((performance.now() - serviceStarted) * 100) / 100 } };
       },
     };
 
@@ -95,15 +118,15 @@ async function main() {
     const actor = createActorContext({ ...trusted, isSuperAdmin: false });
     const repository = new ConvexControlPlaneRepository(client);
     const slice = new CrmSearchLeadsVerticalSlice(
-      repository, directPort,
+      repository, directPort, directContextPort,
       new OpenRouterAdapter({ apiKey: required("OPENROUTER_API_KEY"), appName: "Hostmate CRM Search Leads E2E" }),
       { model, timeoutMs: 45_000, maxCostUsd: 0.05 },
     );
     const conversationId = randomUUID();
-    const searchMessage = target.client_phone
-      ? `Busca el lead con teléfono ${String(target.client_phone).trim()}`
-      : target.client_email ? `Busca el lead con email ${String(target.client_email).trim()}` : `Busca a ${String(target.client_name).trim()}`;
+    const searchMessage = `Busca el lead ${targetQuery} y dime qué sabemos de él`;
     const turn = await slice.execute(actor, { conversationId, message: searchMessage });
+    if (!turn.executionRunId) throw new Error("Composed E2E did not create an Execution Run");
+    const executionRunId = turn.executionRunId;
 
     // A fresh authenticated client simulates frontend refresh/reconnect.
     const reconnected = new AuthenticatedConvexHttpClient(convexUrl, token);
@@ -111,28 +134,38 @@ async function main() {
     const [runs, messages, events, usage] = await Promise.all([
       reconnectedRepository.listRuns(actor, { limit: 100, ownOnly: true }),
       reconnectedRepository.listMessages(actor, { conversationId, limit: 200 }),
-      reconnectedRepository.listEvents(actor, { executionRunId: turn.executionRunId, limit: 500 }),
-      reconnectedRepository.listUsage(actor, { runId: turn.executionRunId, limit: 50 }),
+      reconnectedRepository.listEvents(actor, { executionRunId, limit: 500 }),
+      reconnectedRepository.listUsage(actor, { runId: executionRunId, limit: 50 }),
     ]);
     const interaction = runs.find((run) => run.runId === turn.interactionRunId)!;
-    const execution = runs.find((run) => run.runId === turn.executionRunId)!;
+    const execution = runs.find((run) => run.runId === executionRunId)!;
+    const searchData = turn.result.data?.search;
+    const contextData = turn.result.data?.context;
+    const durableAssistant = messages.find((message) => message.role === "assistant");
+    const durableContextOk = durableAssistant?.blocks?.[0]?.items[0]?.ref.id === String(target.id)
+      && durableAssistant.contextRefs?.[0]?.id === String(target.id);
     process.stdout.write(`${JSON.stringify({
-      verdict: turn.result.status === "failed" || turn.result.status === "permission_denied" || (turn.result.data?.matches.length ?? 0) < 1 ? "FAIL" : "PASS",
-      resultStatus: turn.result.status, resultCount: turn.result.data?.matches.length ?? 0,
+      verdict: turn.result.status === "completed" && (searchData?.matches.length ?? 0) === 1
+        && contextData?.lead.ref.id === String(target.id) && durableContextOk ? "PASS" : "FAIL",
+      resultStatus: turn.result.status, resultCount: searchData?.matches.length ?? 0, contextLeadId: contextData?.lead.ref.id,
       errorCode: turn.result.errors[0]?.code, errorMessage: turn.result.errors[0]?.message,
       errorDetails: turn.result.errors[0]?.details,
       interactionLatencyMs: interaction.completedAt! - interaction.createdAt,
       executionLatencyMs: execution.completedAt! - execution.createdAt,
       openRouterLatencyMs: turn.runtime?.latencyMs,
-      leadServiceLatencyMs: turn.result.data?.telemetry?.latencyMs,
+      leadServiceLatencyMs: searchData?.telemetry?.latencyMs,
+      leadContextLatencyMs: contextData?.telemetry?.latencyMs,
       llmCalls: 1, convexEventCount: events.length, durableMessageCountAfterReconnect: messages.length,
+      durableBlocksAndContextRefsAfterReconnect: durableContextOk,
+      convexInsertedRecords: 1 + 2 + 2 + 1 + events.length + usage.length,
+      convexDocumentWrites: 1 + 2 + 2 + 1 + events.length + usage.length + 2 + 4 + 2,
       requestedModel: usage[0]?.requestedModel, resolvedModel: usage[0]?.resolvedModel, provider: usage[0]?.provider,
       inputTokens: usage[0]?.inputTokens, outputTokens: usage[0]?.outputTokens, costUsd: usage[0]?.costUsd,
       finishReason: usage[0]?.finishReason, totalE2eLatencyMs: Date.now() - startedAt,
       crmWrites: 0, toolScope: execution.toolScope,
       toolCriteria: executedInput ? {
         hasQuery: Boolean(executedInput.query), hasCity: Boolean(executedInput.city), status: executedInput.status,
-        queryMatchesSourceExactly: executedInput.query === String(target.client_phone ?? target.client_email ?? target.client_name).trim(),
+        queryMatchesSourceExactly: executedInput.query === targetQuery,
         page: executedInput.page, limit: executedInput.limit,
       } : undefined,
     }, null, 2)}\n`);

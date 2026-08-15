@@ -23,6 +23,7 @@ export type NormalizedAgentErrorCode =
   | "AMBIGUOUS"
   | "MISSING_REQUIRED_FIELD"
   | "NOT_FOUND"
+  | "STALE_REFERENCE"
   | "PERMISSION_DENIED"
   | "POLICY_DENIED"
   | "PRECONDITION_FAILED"

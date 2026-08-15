@@ -255,7 +255,7 @@ export default defineSchema({
   agentPlatformMessages: defineTable({
     messageId: v.string(), conversationId: v.string(), tenantId: v.string(), actorUserId: v.string(),
     role: v.union(v.literal("user"), v.literal("assistant"), v.literal("system")),
-    contentRedacted: v.string(), blocks: v.optional(v.any()), runId: v.optional(v.string()), sequence: v.number(), createdAt: v.number(),
+    contentRedacted: v.string(), blocks: v.optional(v.any()), contextRefs: v.optional(v.any()), runId: v.optional(v.string()), sequence: v.number(), createdAt: v.number(),
   }).index("by_tenant_conversation_sequence", ["tenantId", "conversationId", "sequence"]),
 
   agentPlatformRuns: defineTable({

@@ -1,10 +1,10 @@
 # CRM Search Leads vertical slice
 
-Status: implemented and validated as the first read-only Product Tool on the Boop-derived Agent Platform. The capability remains feature-gated and has not been deployed or enabled for product users.
+Status: implemented and validated as the first read-only Product Tool on the Boop-derived Agent Platform, now composed with `crm.get_lead_context.v1`. Both capabilities remain feature-gated and have not been deployed or enabled for product users.
 
 ## 1. Arquitectura real del slice
 
-The browser posts a natural-language turn to the authenticated Hostmate API. Hostmate derives a short-lived RS256 ActorContext token from the existing session and proxies only the turn to the isolated runtime. Convex validates the token and provides the trusted actor. The runtime records an Interaction Run, resolves a `crm` Execution Run with one tool, asks OpenRouter to call it, and deterministically renders its structured result. The Product Tool reaches Hostmate through a signed internal callback, which calls `lead.service.list`; the agent never imports Prisma or SQL.
+The browser posts a natural-language turn to the authenticated Hostmate API. Hostmate derives a short-lived RS256 ActorContext token from the existing session and proxies only the turn to the isolated runtime. Convex validates the token and provides the trusted actor. The runtime records an Interaction Run and resolves a `crm` Execution Run with the minimum objective-derived scope. A simple lookup exposes only search; a composed lookup exposes search and context. The Product Tool reaches Hostmate through a signed internal callback, which calls `lead.service.list`; the agent never imports Prisma or SQL.
 
 ```mermaid
 sequenceDiagram
@@ -58,11 +58,11 @@ Hostmate derives tenant, user, role, permissions, session, locale/timezone, perm
 
 ## 5. Policy
 
-The registry and `DefaultPolicyEngine` require `crm.read`, active feature status, `crm` compatibility and read-only mode. Unauthorized actors stop before OpenRouter and before `lead.service`. The internal callback rechecks permission independently. Tool arguments are strict at the runtime parser and again at the handler boundary.
+The registry and `DefaultPolicyEngine` require `crm.read`, active feature status, `crm` compatibility and read-only mode. The signed internal callback independently applies the definitive product policy: `agent` adds `assigned_agent_id = actor.userId`; `admin` and `superadmin` can search tenant-wide inside the signed effective tenant. No role can select a tenant through tool input. Unauthorized actors stop before OpenRouter and before `lead.service`.
 
 ## 6. Profile/tool scoping
 
-The Interaction boundary forwards only profile `crm`, objective class `lead.lookup`, capability `crm.lead.search` and the original objective. The resolver allowlist contains only `crm.search_leads.v1`. Runs persist profile version `1`, the exact scope `crm.search_leads.v1@1`, registry hash and skill version (`resolve-ambiguous-lead@1`).
+The Interaction boundary forwards only profile `crm`, objective class `lead.lookup` and capabilities inferred from the objective. “Busca…” resolves only `crm.search_leads.v1`; “Busca… y dime qué sabemos…” resolves exactly `crm.search_leads.v1` plus `crm.get_lead_context.v1`; a selected EntityRef follow-up resolves only context. Runs persist profile version `1`, exact tool scope, registry hash and applicable skill version.
 
 ## 7. Domain Service utilizado
 
@@ -75,10 +75,11 @@ leadService.list(actor.tenantId, {
   search: query,
   prop_city: city,
   status,
+  assigned_agent_id: actor.role === "agent" ? actor.userId : undefined,
 }, false, actor.userId)
 ```
 
-Passing `isSuperAdmin=false` is deliberate: the Product Tool is always locked to the effective signed tenant. Existing search, ordering, joins and Prisma access remain in `v2/apps/api/src/services/lead.service.ts`.
+Passing `isSuperAdmin=false` is deliberate: the Product Tool is always locked to the effective signed tenant. Agent ownership is added in the secure adapter rather than trusted to the LLM or retrofitted into historical CRM routes. Existing search, ordering, joins and Prisma access remain in `v2/apps/api/src/services/lead.service.ts`.
 
 ## 8. DTO
 
@@ -86,7 +87,7 @@ The internal adapter allowlists only lead ID, client name/contact, CRM status, l
 
 ## 9. EntityRefs
 
-Each result includes `{ type: "crm.lead", id, label, deepLink }`. The deep link opens `/leads?lead=<id>`. It is output-only: attempts to inject `EntityRef`, `leadId`, `tenantId`, `tenant_id` or assigned-agent IDs into arguments fail strict validation.
+Each result includes `{ type: "crm.lead", id, label, deepLink }`. The deep link opens `/leads?lead=<id>`. Search keeps it output-only; context accepts that exact EntityRef shape and reauthorizes it. Attempts to inject `leadId`, tenant or assigned-agent fields into search fail strict validation.
 
 ## 10. Interaction flow
 
@@ -114,7 +115,7 @@ Contract tests run the same name against actors from tenant A and tenant B and v
 
 ## 16. Permissions
 
-Observed product behavior is inconsistent: `GET /api/v2/leads` has no role middleware and `lead.service.list` does not restrict normal agents to assigned leads, while the React CRM route is admin-only. Therefore the real backend read scope is “all non-deleted leads in the current tenant” for authenticated agent/admin; this tool matches that backend scope and adds no invented ownership rule. It intentionally does not inherit the service's unfiltered cross-tenant superadmin mode. The inconsistency is documented, not silently changed in existing CRM routes.
+The Product decision is now authoritative even though historical CRM route/UI/service behavior remains inconsistent. Agents can search only leads assigned to `ActorContext.userId`; admins can search the effective tenant; superadmin remains locked to its signed effective tenant. The model cannot provide `assignedAgentId`, `userId` or `tenantId`. Existing CRM routes and `lead.service.list` semantics were not silently changed.
 
 ## 17. Ambiguity handling
 
@@ -124,7 +125,7 @@ Zero matches returns `completed` with a clear no-results summary. Exactly one to
 
 The live E2E used the Foundation `OpenRouterAdapter`, not a mocked E2E provider. Provider-level `strict: true` was removed because OpenAI rejects useful optional fields unless every property is required; runtime Zod remains strict and `additionalProperties: false` remains in JSON Schema. `stopAfterToolResult` avoids a cosmetic second generation and exposes structured tool results.
 
-Observed route: requested/resolved `openai/gpt-4.1-mini`, upstream `OpenAI`, finish reason `tool_calls`, one model call, 191 input tokens, 15 output tokens and USD `0.0001004`.
+Latest composed route: requested/resolved `openai/gpt-4.1-mini`, upstream `OpenAI`, finish reason `tool_calls`, one model call, 195 input tokens, 15 output tokens and USD `0.000102`. Context rendering is deterministic; there is no cosmetic synthesis call.
 
 ## 19. Performance
 
@@ -132,35 +133,37 @@ Latest passing live run against a real tenant lead and real MySQL data:
 
 | Segment | Observed |
 |---|---:|
-| Interaction Run | 20 ms |
-| Execution Run | 3,405 ms |
-| OpenRouter | 3,356 ms |
-| `lead.service.list` | 2,302.28 ms |
+| Interaction Run | 14 ms |
+| Composed Execution Run | 4,827 ms |
+| OpenRouter | 3,769 ms |
+| `lead.service.list` | 2,591.01 ms |
+| Context facade | 988.92 ms |
 | Model calls | 1 |
-| Lifecycle events recovered | 9 |
+| Lifecycle events recovered | 12 |
 | Messages recovered after new client | 2 |
-| Total harness time including local Convex/JWKS startup | 13,967 ms |
+| Total harness time including local Convex/JWKS startup | 21,028 ms |
 | CRM writes | 0 |
 
 The dominant product-path costs were OpenRouter and the existing lead list service. No premature query rewrite was made.
 
 ## 20. Tests
 
-Fork suite: 94 tests passed before final documentation, including 13 new/extended CRM/OpenRouter tests. Hostmate focused API suite: 10 tests passed, including eight signed internal-adapter tests. Web TypeScript lint passed. The live E2E used an ephemeral RS256 issuer/JWKS, local Convex, a fresh Convex client for reconnect, real OpenRouter, real `lead.service.list` and real MySQL reads. Production had no exact “Juan García” record in tenants 1/7/9/11, so that literal utterance is covered deterministically in runtime tests; the live run selected an existing real lead by phone and returned one match.
+Fork suite: 102 tests pass, including search/context contracts, composition, ambiguity, ordinal and pronoun continuity. Hostmate focused suite: 27 tests pass across JWT bridge, internal adapter and context facade. Web lint/build pass. The composed live E2E uses ephemeral RS256 JWKS, local Convex, reconnect, real OpenRouter, real Hostmate services and real MySQL reads.
 
 ## 21. Problemas encontrados
 
 1. Foundation emitted provider `strict: true` with optional JSON Schema fields; OpenAI rejected it before tool execution.
 2. OpenAI filled optional `city` with an empty string; the handler now treats only empty optional strings as omitted.
 3. OpenAI invented `status: new` and `limit: 1` in an early live run. Pagination is now backend-owned, and city/status require objective evidence.
-4. Hostmate route/UI/service permission semantics are historically inconsistent as described above.
-5. `lead.service.list` took about 2.3 seconds in the passing live read; it remains untouched.
-6. The unrelated pre-existing API typecheck error for missing `appendIgDmOpenTracking` remains and was not modified.
+4. Hostmate route/UI/service permission semantics remain historically inconsistent; Agent Platform now enforces the approved rule independently.
+5. `lead.service.list` took about 2.59 seconds in the latest composed live read; it remains untouched pending measurement-led optimization.
+6. Convex previously accepted `blocks` and `runId` but dropped them in `appendMessage`; persistence was fixed while adding conversation-scoped `contextRefs`.
+7. The unrelated pre-existing API typecheck error for missing `appendIgDmOpenTracking` remains and was not modified.
 
 ## 22. Deuda técnica
 
-Before enabling users, deploy the fork runtime as a managed service, configure stable JWKS/key rotation and runtime URLs, add retention policy for Agent Platform conversations, and add a browser smoke test in the deployed dev environment. Product should also decide whether normal agents may read all tenant leads or only assigned leads, then align route, UI and service in a separate authorization change. `llm_logs` is not used by this runtime; Agent Platform usage/events are canonical, avoiding duplicate logging. If a future requirement needs a MySQL `llm_logs` link, store only its correlation ID.
+Before enabling users, deploy the fork runtime as a managed service, configure stable JWKS/key rotation and runtime URLs, add retention policy for Agent Platform conversations, and add a browser smoke test in the deployed dev environment. Historical CRM authorization alignment remains a separate product refactor. `llm_logs` is not used by this runtime; Agent Platform usage/events are canonical.
 
 ## 23. Recomendación para la siguiente capability
 
-After this slice is reviewed, the best second capability is a read-only `crm.get_lead_context` that accepts the output EntityRef and reuses an existing domain service. It should not be implemented until permission semantics and this first slice are approved. No write, task, visit, property, demand or communication tool was added here.
+After the second capability, the best third capability is a read-only `crm.list_lead_visits.v1`. The context DTO intentionally includes only the next visit; a dedicated EntityRef-based tool can answer detailed visit follow-ups without inflating `get_lead_context` or crossing into visit writes.

@@ -1,15 +1,18 @@
 import express from "express";
 import { z } from "zod";
 import { createActorContext } from "../contracts/actor-context.js";
+import { entityRefSchema } from "../contracts/execution-result.js";
 import { ConvexControlPlaneRepository } from "../control-plane/convex-control-plane-repository.js";
 import { AuthenticatedConvexHttpClient } from "../control-plane/convex-http-client.js";
 import { HostmateHttpLeadSearchPort } from "../product-tools/crm/hostmate-http-lead-search-port.js";
+import { HostmateHttpLeadContextPort } from "../product-tools/crm/hostmate-http-lead-context-port.js";
 import { OpenRouterAdapter } from "../runtime/openrouter-adapter.js";
 import { CrmSearchLeadsVerticalSlice } from "../vertical-slices/crm-search-leads.js";
 
 const requestSchema = z.object({
   conversationId: z.string().uuid(),
   message: z.string().trim().min(1).max(500),
+  selectedEntityRef: entityRefSchema.extend({ type: z.literal("crm.lead") }).strict().optional(),
 }).strict();
 
 export type AgentPlatformRuntimeConfig = Readonly<{
@@ -24,7 +27,7 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
   const app = express();
   app.disable("x-powered-by");
   app.use(express.json({ limit: "16kb" }));
-  app.get("/health", (_req, res) => res.json({ ok: true, capability: "crm.search_leads.v1" }));
+  app.get("/health", (_req, res) => res.json({ ok: true, capabilities: ["crm.search_leads.v1", "crm.get_lead_context.v1"] }));
   app.post("/v1/turn", async (req, res) => {
     const authorization = req.headers.authorization;
     if (!authorization?.startsWith("Bearer ")) return res.status(401).json({ success: false, error: "UNAUTHENTICATED" });
@@ -40,6 +43,7 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
       const slice = new CrmSearchLeadsVerticalSlice(
         new ConvexControlPlaneRepository(convex),
         new HostmateHttpLeadSearchPort(config.hostmateApiBaseUrl, token),
+        new HostmateHttpLeadContextPort(config.hostmateApiBaseUrl, token),
         new OpenRouterAdapter({ apiKey: config.openRouterApiKey, appName: "Hostmate Agent Platform" }),
         { model: config.model, fallbackModels: config.fallbackModels },
       );
