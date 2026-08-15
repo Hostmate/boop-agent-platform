@@ -181,7 +181,7 @@ function sanitizeCommon(result: VisitDetailServiceResult, requested: EntityRef, 
     at, timezone, visitType: present(result.visitType), durationMinutes: result.durationMinutes ?? undefined,
     property,
     lead: result.lead && leadName ? {
-      ref: { type: "crm.lead" as const, id: result.lead.id, label: leadName, deepLink: `/leads?lead=${encodeURIComponent(result.lead.id)}` },
+      ref: { type: "crm.lead" as const, id: result.lead.id, label: leadName, deepLink: `/conversations?leadId=${encodeURIComponent(result.lead.id)}` },
       name: leadName,
     } : undefined,
     assignedAgent: result.assignedAgent ? { id: result.assignedAgent.id, name: present(result.assignedAgent.name) } : undefined,

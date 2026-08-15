@@ -87,7 +87,7 @@ The internal adapter allowlists only lead ID, client name/contact, CRM status, l
 
 ## 9. EntityRefs
 
-Each result includes `{ type: "crm.lead", id, label, deepLink }`. The deep link opens `/leads?lead=<id>`. Search keeps it output-only; context accepts that exact EntityRef shape and reauthorizes it. Attempts to inject `leadId`, tenant or assigned-agent fields into search fail strict validation.
+Each result includes `{ type: "crm.lead", id, label, deepLink }`. The deep link opens `/conversations?leadId=<id>`, the CRM surface available to commercial users. Search keeps it output-only; context accepts that exact EntityRef shape and reauthorizes it. Attempts to inject `leadId`, tenant or assigned-agent fields into search fail strict validation.
 
 ## 10. Interaction flow
 

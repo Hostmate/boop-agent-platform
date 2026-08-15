@@ -118,7 +118,7 @@ function sanitize(result: LeadVisitsServiceResult, requestedRef: EntityRef, time
   if (leadId !== requestedRef.id) throw new Error("LEAD_VISITS_REFERENCE_MISMATCH");
   const leadName = present(result.lead.name) ?? `Lead ${leadId}`;
   return listLeadVisitsOutputSchema.parse({
-    lead: { ref: { type: "crm.lead", id: leadId, label: leadName, deepLink: `/leads?lead=${encodeURIComponent(leadId)}` }, name: leadName },
+    lead: { ref: { type: "crm.lead", id: leadId, label: leadName, deepLink: `/conversations?leadId=${encodeURIComponent(leadId)}` }, name: leadName },
     visits: result.visits.slice(0, 10).map((visit) => {
       const at = isoDate(visit.at);
       if (!at) throw new Error("INVALID_VISIT_DATE");

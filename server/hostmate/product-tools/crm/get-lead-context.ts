@@ -100,7 +100,7 @@ function sanitize(input: LeadContextServiceResult, requestedRef: EntityRef): Crm
   const name = present(input.lead.name) ?? `Lead ${id}`;
   return crmGetLeadContextOutputSchema.parse({
     lead: {
-      ref: { type: "crm.lead", id, label: name, deepLink: `/leads?lead=${encodeURIComponent(id)}` },
+      ref: { type: "crm.lead", id, label: name, deepLink: `/conversations?leadId=${encodeURIComponent(id)}` },
       name, phone: maskPhone(input.lead.phone), email: maskEmail(input.lead.email),
       status: present(input.lead.status), source: present(input.lead.source),
       createdAt: date(input.lead.createdAt), lastActivityAt: date(input.lead.lastActivityAt),

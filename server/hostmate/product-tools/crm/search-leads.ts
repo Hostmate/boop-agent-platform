@@ -106,7 +106,7 @@ function sanitize(item: LeadServiceListItem): SanitizedLead {
     property,
     assignedAgent: item.agent_name || undefined,
     createdAt: item.created_at ? new Date(item.created_at).toISOString() : undefined,
-    ref: { type: "crm.lead", id, label: name, deepLink: `/leads?lead=${encodeURIComponent(id)}` },
+    ref: { type: "crm.lead", id, label: name, deepLink: `/conversations?leadId=${encodeURIComponent(id)}` },
   };
 }
 

@@ -62,7 +62,7 @@ function output(count: number) {
     total: count, page: 1, limit: 5,
     matches: Array.from({ length: count }, (_, index) => ({
       id: String(index + 1), name: index ? "Juan García López" : "Juan García",
-      status: "new", ref: { type: "crm.lead", id: String(index + 1), label: index ? "Juan García López" : "Juan García", deepLink: `/leads?lead=${index + 1}` },
+      status: "new", ref: { type: "crm.lead", id: String(index + 1), label: index ? "Juan García López" : "Juan García", deepLink: `/conversations?leadId=${index + 1}` },
     })),
   };
 }
@@ -119,7 +119,10 @@ describe("crm.search_leads.v1 contract", () => {
     const tool = createCrmSearchLeadsTool({ port });
     const result = await tool.handler({ query: "Juan" }, actor("7")) as any;
     expect(port.search).toHaveBeenCalledWith(expect.objectContaining({ tenantId: "7" }), expect.not.objectContaining({ tenantId: expect.anything() }));
-    expect(result.matches[0]).toMatchObject({ id: "17", name: "Juan T7", phone: "••• •• 3456", email: "j•••@example.com" });
+    expect(result.matches[0]).toMatchObject({
+      id: "17", name: "Juan T7", phone: "••• •• 3456", email: "j•••@example.com",
+      ref: { type: "crm.lead", id: "17", deepLink: "/conversations?leadId=17" },
+    });
     expect(JSON.stringify(result)).not.toMatch(/tenant_id|raw_email_html|600 123 456|secret/);
   });
 
@@ -184,7 +187,10 @@ describe("crm.get_lead_context.v1 contract", () => {
     const result = await tool.handler({ lead: { type: "crm.lead", id: "123", label: "Juan García" } }, actor()) as any;
     expect(port.getContext).toHaveBeenCalledWith(expect.objectContaining({ tenantId: "7", userId: "10" }), expect.objectContaining({ lead: { type: "crm.lead", id: "123", label: "Juan García" } }));
     expect(result).toMatchObject({
-      lead: { name: "Juan García", phone: "••• •• 3456", email: "j•••@example.com" },
+      lead: {
+        name: "Juan García", phone: "••• •• 3456", email: "j•••@example.com",
+        ref: { type: "crm.lead", id: "123", deepLink: "/conversations?leadId=123" },
+      },
       property: { title: "Ático Centro" }, pendingTasks: [{ title: "Llamar" }],
     });
     const serialized = JSON.stringify(result);
@@ -220,7 +226,11 @@ describe("visits.list_lead_visits.v1 contract", () => {
     })) });
     const result = await createListLeadVisitsTool({ port }).handler({ lead: { type: "crm.lead", id: "123", label: "Juan" }, scope: "upcoming" }, actor()) as any;
     expect(port.listLeadVisits).toHaveBeenCalledWith(expect.objectContaining({ tenantId: "7", userId: "10" }), expect.not.objectContaining({ tenantId: expect.anything() }));
-    expect(result).toMatchObject({ timezone: "Europe/Madrid", visits: [{ ref: { type: "visits.visit", id: "91", deepLink: "/visits?visitId=91" }, status: "confirmed" }] });
+    expect(result).toMatchObject({
+      timezone: "Europe/Madrid",
+      lead: { ref: { type: "crm.lead", id: "123", deepLink: "/conversations?leadId=123" } },
+      visits: [{ ref: { type: "visits.visit", id: "91", deepLink: "/visits?visitId=91" }, status: "confirmed" }],
+    });
     expect(JSON.stringify(result)).not.toMatch(/tenant_id|relation_source|notes|secret/);
   });
 
@@ -252,7 +262,7 @@ describe("visits.get_visit.v1 contract", () => {
     expect(result).toMatchObject({
       kind: "individual", status: "confirmed", timezone: "Europe/Madrid",
       ref: { type: "visits.visit", id: "91", deepLink: "/visits?visitId=91" },
-      lead: { ref: { type: "crm.lead", id: "123" } },
+      lead: { ref: { type: "crm.lead", id: "123", deepLink: "/conversations?leadId=123" } },
       property: { ref: { type: "property.property", id: "55" } },
     });
     expect(JSON.stringify(result)).not.toMatch(/token|google_event|notes|secret|tenant_id|dynamic_answers/);
