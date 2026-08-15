@@ -40,6 +40,10 @@ export class ConvexControlPlaneRepository implements ControlPlaneRepository {
     });
   }
 
+  listMessages(actor: ActorContext, input: { conversationId: string; limit: number }) {
+    return this.client.query<readonly AgentMessageRecord[]>("agentPlatform:listMessages", { ...input, ...this.audit(actor) });
+  }
+
   createRun(actor: ActorContext, input: CreateRunInput) {
     return this.client.mutation<ExecutionRunRecord>("agentPlatform:createRun", {
       ...input,
@@ -80,11 +84,23 @@ export class ConvexControlPlaneRepository implements ControlPlaneRepository {
     });
   }
 
+  listEvents(actor: ActorContext, input: { executionRunId: string; limit: number }) {
+    return this.client.query<readonly AgentEvent[]>("agentPlatform:listEvents", { ...input, ...this.audit(actor) });
+  }
+
+  listUsage(actor: ActorContext, input: { runId: string; limit: number }) {
+    return this.client.query<readonly Parameters<ControlPlaneRepository["recordUsage"]>[1][]>("agentPlatform:listUsage", { ...input, ...this.audit(actor) });
+  }
+
   createAttempt(actor: ActorContext, input: AttemptRecord) {
     return this.client.mutation<AttemptRecord>("agentPlatform:createAttempt", {
       ...input,
       ...this.audit(actor),
     });
+  }
+
+  updateAttempt(actor: ActorContext, input: Parameters<ControlPlaneRepository["updateAttempt"]>[1]) {
+    return this.client.mutation<AttemptRecord>("agentPlatform:updateAttempt", { ...input, ...this.audit(actor) });
   }
 
   acquireLease(actor: ActorContext, input: Parameters<ControlPlaneRepository["acquireLease"]>[1]) {

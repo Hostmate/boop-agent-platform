@@ -55,6 +55,8 @@ export type OpenRouterRunOptions = Readonly<{
   temperature?: number;
   metadata?: Record<string, string | number | boolean>;
   sessionId?: string;
+  /** End deterministically after executing the requested tools; avoids a cosmetic second model call. */
+  stopAfterToolResult?: boolean;
   onEvent?: (event: OpenRouterRuntimeEvent) => void | Promise<void>;
 }>;
 
@@ -85,6 +87,7 @@ export interface OpenRouterRuntimeResult extends RuntimeRunResult {
   finishReason?: string;
   latencyMs: number;
   detailedUsage: OpenRouterDetailedUsage;
+  toolResults: readonly Readonly<{ toolName: string; text: string; success: boolean }>[];
 }
 
 export class OpenRouterRuntimeError extends Error {
@@ -145,7 +148,10 @@ function configuredTools(request: RuntimeRunRequest) {
     handlers.set(name, tool);
     definitions.push({
       type: "function",
-      function: { name, description: tool.description, parameters: tool.jsonSchema, strict: true },
+      // Provider-level strict mode requires every property to be required on
+      // OpenAI-compatible providers, which is incompatible with useful optional
+      // filters. Runtime Zod remains strict and rejects unknown/invalid fields.
+      function: { name, description: tool.description, parameters: tool.jsonSchema },
     });
   }
   return { definitions, handlers };
@@ -204,6 +210,7 @@ export class OpenRouterAdapter {
     let provider: string | undefined;
     let resolvedModel = request.model;
     let aggregate: OpenRouterUsage = {};
+    const toolResults: Array<{ toolName: string; text: string; success: boolean }> = [];
 
     try {
       for (let round = 0; round <= options.budget.maxToolRounds; round += 1) {
@@ -219,7 +226,7 @@ export class OpenRouterAdapter {
         if (stream.text) text += stream.text;
         messages.push({ role: "assistant", content: stream.text, ...(stream.toolCalls.length ? { tool_calls: stream.toolCalls } : {}) });
         if (stream.toolCalls.length === 0) break;
-        if (round === options.budget.maxToolRounds) {
+        if (round === options.budget.maxToolRounds && !options.stopAfterToolResult) {
           throw new OpenRouterRuntimeError("OpenRouter tool round budget exceeded", "BUDGET_EXCEEDED", false);
         }
 
@@ -242,6 +249,7 @@ export class OpenRouterAdapter {
           }
           await request.onToolResult?.(tool.name, result.text);
           await options.onEvent?.({ type: "tool_result", toolName: tool.name, success: result.success !== false });
+          toolResults.push({ toolName: tool.name, text: result.text, success: result.success !== false });
           return { role: "tool", tool_call_id: call.id, name: call.function.name, content: result.text };
         };
 
@@ -249,6 +257,7 @@ export class OpenRouterAdapter {
           ? await Promise.all(stream.toolCalls.map(executeCall))
           : await stream.toolCalls.reduce<Promise<OpenRouterMessage[]>>(async (prior, call) => [...(await prior), await executeCall(call)], Promise.resolve([]));
         messages.push(...toolMessages);
+        if (options.stopAfterToolResult) break;
       }
     } catch (error) {
       if (abortScope.signal.aborted && !(error instanceof OpenRouterRuntimeError)) {
@@ -280,6 +289,7 @@ export class OpenRouterAdapter {
       finishReason,
       latencyMs: Date.now() - startedAt,
       detailedUsage: details,
+      toolResults: Object.freeze([...toolResults]),
     };
   }
 

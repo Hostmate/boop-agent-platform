@@ -10,7 +10,9 @@ export function defineRuntimeTool<T extends z.ZodRawShape>(
   handle: (args: z.infer<z.ZodObject<T>>) => Promise<RuntimeToolResult>,
   jsonSchema: Record<string, unknown> = zodShapeToJsonSchema(inputSchema),
 ): RuntimeTool {
-  const parser = z.object(inputSchema);
+  // Product tools are an authority boundary. Unknown keys must fail instead of
+  // being silently stripped (for example tenantId or an injected EntityRef).
+  const parser = z.object(inputSchema).strict();
   return {
     namespace,
     name,

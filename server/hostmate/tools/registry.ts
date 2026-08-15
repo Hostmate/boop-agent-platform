@@ -25,16 +25,22 @@ export type ProductToolDefinition<T extends z.ZodRawShape = z.ZodRawShape> = Rea
   handler: (input: z.infer<z.ZodObject<T>>, context: ActorContext) => Promise<unknown>;
 }>;
 
+type RegisteredProductToolDefinition = Omit<ProductToolDefinition<any>, "handler"> & Readonly<{
+  // `never` safely erases heterogeneous input shapes: every concrete handler
+  // can accept it, while callers still cannot bypass the runtime parser.
+  handler: (input: never, context: ActorContext) => Promise<unknown>;
+}>;
+
 export type ToolResolution = Readonly<{
-  tools: readonly ProductToolDefinition[];
+  tools: readonly RegisteredProductToolDefinition[];
   rejected: readonly { toolId: string; reason: string }[];
   registryHash: string;
 }>;
 
 export class ProductToolRegistry {
-  private readonly tools: readonly ProductToolDefinition[];
+  private readonly tools: readonly RegisteredProductToolDefinition[];
 
-  constructor(tools: readonly ProductToolDefinition[]) {
+  constructor(tools: readonly RegisteredProductToolDefinition[]) {
     const ids = new Set<string>();
     for (const tool of tools) {
       if (ids.has(tool.toolId)) throw new Error(`Duplicate tool id: ${tool.toolId}`);
@@ -56,7 +62,7 @@ export class ProductToolRegistry {
   }): ToolResolution {
     const requiredCapabilities = new Set(input.objectiveCapabilities);
     const allowlist = input.allowedToolIds ? new Set(input.allowedToolIds) : null;
-    const tools: ProductToolDefinition[] = [];
+    const tools: RegisteredProductToolDefinition[] = [];
     const rejected: { toolId: string; reason: string }[] = [];
     for (const tool of this.tools) {
       let reason: string | null = null;
@@ -100,7 +106,7 @@ export class ProductToolRegistry {
           if (decision.effect !== "allow") {
             return { text: JSON.stringify({ ok: false, policy: decision }), success: false };
           }
-          const output = tool.outputSchema.parse(await tool.handler(args, input.actor));
+          const output = tool.outputSchema.parse(await tool.handler(args as never, input.actor));
           return { text: JSON.stringify({ ok: true, data: output }), success: true };
         }),
       ),

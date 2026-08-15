@@ -1,7 +1,9 @@
 export * from "./contracts/actor-context.js";
 export * from "./contracts/domain.js";
+export * from "./contracts/execution-result.js";
 export * from "./control-plane/repository.js";
 export * from "./control-plane/convex-control-plane-repository.js";
+export * from "./control-plane/convex-http-client.js";
 export * from "./drafts/contracts.js";
 export * from "./events/contracts.js";
 export * from "./interaction/dispatch.js";
@@ -11,3 +13,6 @@ export * from "./profiles/registry.js";
 export * from "./runtime/openrouter-adapter.js";
 export * from "./skills/registry.js";
 export * from "./tools/registry.js";
+export * from "./product-tools/crm/search-leads.js";
+export * from "./product-tools/crm/hostmate-http-lead-search-port.js";
+export * from "./vertical-slices/crm-search-leads.js";

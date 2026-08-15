@@ -26,12 +26,14 @@ export type ExecutionRunRecord = Readonly<{
   dependencyRunIds: readonly string[];
   status: RunStatus;
   objectiveHash: string;
+  objectiveRedacted?: string;
   registryHash: string;
   skillVersions: Readonly<Record<string, number>>;
   toolScope: readonly string[];
   requestedModel?: string;
   resolvedModel?: string;
   provider?: string;
+  finishReason?: string;
   resultSummary?: string;
   errorCode?: string;
   cancelRequestedAt?: number;
@@ -77,6 +79,7 @@ export type UsageRecord = Readonly<{
   costUsd: number;
   latencyMs: number;
   fallbackUsed: boolean;
+  finishReason?: string;
   createdAt: number;
 }>;
 

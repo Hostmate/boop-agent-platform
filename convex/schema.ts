@@ -255,7 +255,7 @@ export default defineSchema({
   agentPlatformMessages: defineTable({
     messageId: v.string(), conversationId: v.string(), tenantId: v.string(), actorUserId: v.string(),
     role: v.union(v.literal("user"), v.literal("assistant"), v.literal("system")),
-    contentRedacted: v.string(), sequence: v.number(), createdAt: v.number(),
+    contentRedacted: v.string(), blocks: v.optional(v.any()), runId: v.optional(v.string()), sequence: v.number(), createdAt: v.number(),
   }).index("by_tenant_conversation_sequence", ["tenantId", "conversationId", "sequence"]),
 
   agentPlatformRuns: defineTable({
@@ -263,8 +263,8 @@ export default defineSchema({
     kind: v.union(v.literal("interaction"), v.literal("execution")), profileId: v.optional(v.string()), profileVersion: v.optional(v.number()),
     parentRunId: v.optional(v.string()), dependencyRunIds: v.array(v.string()),
     status: v.union(v.literal("queued"), v.literal("waiting_dependency"), v.literal("resolving_scope"), v.literal("running"), v.literal("awaiting_confirmation"), v.literal("completed"), v.literal("partial"), v.literal("failed"), v.literal("cancelled"), v.literal("timeout")),
-    objectiveHash: v.string(), registryHash: v.string(), skillVersions: v.any(), toolScope: v.array(v.string()),
-    requestedModel: v.optional(v.string()), resolvedModel: v.optional(v.string()), provider: v.optional(v.string()),
+    objectiveHash: v.string(), objectiveRedacted: v.optional(v.string()), registryHash: v.string(), skillVersions: v.any(), toolScope: v.array(v.string()),
+    requestedModel: v.optional(v.string()), resolvedModel: v.optional(v.string()), provider: v.optional(v.string()), finishReason: v.optional(v.string()),
     visibility: v.union(v.literal("user"), v.literal("tenant_admin"), v.literal("platform_admin")),
     resultSummary: v.optional(v.string()), errorCode: v.optional(v.string()), cancelRequestedAt: v.optional(v.number()),
     createdAt: v.number(), updatedAt: v.number(), completedAt: v.optional(v.number()),
@@ -297,7 +297,7 @@ export default defineSchema({
     usageId: v.string(), tenantId: v.string(), actorUserId: v.string(), runId: v.string(), attemptId: v.string(),
     requestedModel: v.string(), resolvedModel: v.string(), provider: v.optional(v.string()),
     inputTokens: v.number(), outputTokens: v.number(), reasoningTokens: v.number(), cachedTokens: v.number(),
-    costUsd: v.number(), latencyMs: v.number(), fallbackUsed: v.boolean(), createdAt: v.number(),
+    costUsd: v.number(), latencyMs: v.number(), fallbackUsed: v.boolean(), finishReason: v.optional(v.string()), createdAt: v.number(),
   })
     .index("by_tenant_run", ["tenantId", "runId"])
     .index("by_tenant_created", ["tenantId", "createdAt"]),
