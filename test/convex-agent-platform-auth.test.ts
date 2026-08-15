@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canReadTenantRun, requireAgentPlatformActor } from "../convex/agentPlatformAuth.js";
+import { assertConversationOwner, canReadTenantRun, requireAgentPlatformActor } from "../convex/agentPlatformAuth.js";
 
 describe("Convex Agent Platform auth characterization", () => {
   it("derives actor and tenant only from authenticated claims", async () => {
@@ -14,5 +14,12 @@ describe("Convex Agent Platform auth characterization", () => {
     expect(canReadTenantRun({ tenantId: "a", userId: "owner", role: "agent" }, { actorUserId: "owner", visibility: "user" })).toBe(true);
     expect(canReadTenantRun({ tenantId: "a", userId: "other", role: "agent" }, { actorUserId: "owner", visibility: "tenant_admin" })).toBe(false);
     expect(canReadTenantRun({ tenantId: "a", userId: "admin", role: "admin" }, { actorUserId: "owner", visibility: "tenant_admin" })).toBe(true);
+  });
+
+  it("treats a not-yet-created conversation as empty without weakening ownership", () => {
+    const actor = { userId: "user-1" };
+    expect(assertConversationOwner(actor, null)).toBe(false);
+    expect(assertConversationOwner(actor, { ownerUserId: "user-1" })).toBe(true);
+    expect(() => assertConversationOwner(actor, { ownerUserId: "user-2" })).toThrow("CONVERSATION_FORBIDDEN");
   });
 });

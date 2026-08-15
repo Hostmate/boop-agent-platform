@@ -1,6 +1,6 @@
 import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import { canReadTenantRun, requireAgentPlatformActor } from "./agentPlatformAuth";
+import { assertConversationOwner, canReadTenantRun, requireAgentPlatformActor } from "./agentPlatformAuth";
 
 const expectedActorArgs = {
   expectedTenantId: v.optional(v.string()),
@@ -97,7 +97,22 @@ export const listMessages = query({
   handler: async (ctx, args) => {
     const actor = await requireAgentPlatformActor(ctx, args);
     const conversation = await tenantConversation(ctx, actor.tenantId, args.conversationId);
-    if (!conversation || conversation.ownerUserId !== actor.userId) throw new ConvexError("CONVERSATION_FORBIDDEN");
+    if (!assertConversationOwner(actor, conversation)) throw new ConvexError("CONVERSATION_NOT_FOUND");
+    const limit = Math.max(1, Math.min(200, Math.floor(args.limit)));
+    return await ctx.db.query("agentPlatformMessages")
+      .withIndex("by_tenant_conversation_sequence", (q) => q.eq("tenantId", actor.tenantId).eq("conversationId", args.conversationId))
+      .order("asc").take(limit);
+  },
+});
+
+export const listMessagesIfPresent = query({
+  args: { conversationId: v.string(), limit: v.number(), ...expectedActorArgs },
+  handler: async (ctx, args) => {
+    const actor = await requireAgentPlatformActor(ctx, args);
+    const conversation = await tenantConversation(ctx, actor.tenantId, args.conversationId);
+    // The browser allocates an ID before the first turn creates the durable
+    // conversation. Its empty state must render without weakening ownership.
+    if (!assertConversationOwner(actor, conversation)) return [];
     const limit = Math.max(1, Math.min(200, Math.floor(args.limit)));
     return await ctx.db.query("agentPlatformMessages")
       .withIndex("by_tenant_conversation_sequence", (q) => q.eq("tenantId", actor.tenantId).eq("conversationId", args.conversationId))

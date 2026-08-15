@@ -42,3 +42,12 @@ export async function requireAgentPlatformActor(
 export function canReadTenantRun(actor: ConvexActor, run: { actorUserId: string; visibility: string }): boolean {
   return run.actorUserId === actor.userId || (run.visibility !== "user" && (actor.role === "admin" || actor.role === "superadmin"));
 }
+
+export function assertConversationOwner(
+  actor: Pick<ConvexActor, "userId">,
+  conversation: { ownerUserId: string } | null,
+): conversation is { ownerUserId: string } {
+  if (!conversation) return false;
+  if (conversation.ownerUserId !== actor.userId) throw new ConvexError("CONVERSATION_FORBIDDEN");
+  return true;
+}
