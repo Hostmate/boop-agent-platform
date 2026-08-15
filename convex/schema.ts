@@ -246,4 +246,59 @@ export default defineSchema({
   })
     .index("by_automation", ["automationId"])
     .index("by_run_id", ["runId"]),
+
+  agentPlatformConversations: defineTable({
+    conversationId: v.string(), tenantId: v.string(), ownerUserId: v.string(), title: v.optional(v.string()),
+    createdAt: v.number(), updatedAt: v.number(),
+  }).index("by_tenant_conversation", ["tenantId", "conversationId"]),
+
+  agentPlatformMessages: defineTable({
+    messageId: v.string(), conversationId: v.string(), tenantId: v.string(), actorUserId: v.string(),
+    role: v.union(v.literal("user"), v.literal("assistant"), v.literal("system")),
+    contentRedacted: v.string(), sequence: v.number(), createdAt: v.number(),
+  }).index("by_tenant_conversation_sequence", ["tenantId", "conversationId", "sequence"]),
+
+  agentPlatformRuns: defineTable({
+    runId: v.string(), tenantId: v.string(), actorUserId: v.string(), conversationId: v.optional(v.string()),
+    kind: v.union(v.literal("interaction"), v.literal("execution")), profileId: v.optional(v.string()), profileVersion: v.optional(v.number()),
+    parentRunId: v.optional(v.string()), dependencyRunIds: v.array(v.string()),
+    status: v.union(v.literal("queued"), v.literal("waiting_dependency"), v.literal("resolving_scope"), v.literal("running"), v.literal("awaiting_confirmation"), v.literal("completed"), v.literal("partial"), v.literal("failed"), v.literal("cancelled"), v.literal("timeout")),
+    objectiveHash: v.string(), registryHash: v.string(), skillVersions: v.any(), toolScope: v.array(v.string()),
+    requestedModel: v.optional(v.string()), resolvedModel: v.optional(v.string()), provider: v.optional(v.string()),
+    visibility: v.union(v.literal("user"), v.literal("tenant_admin"), v.literal("platform_admin")),
+    resultSummary: v.optional(v.string()), errorCode: v.optional(v.string()), cancelRequestedAt: v.optional(v.number()),
+    createdAt: v.number(), updatedAt: v.number(), completedAt: v.optional(v.number()),
+  })
+    .index("by_tenant_run", ["tenantId", "runId"])
+    .index("by_tenant_created", ["tenantId", "createdAt"])
+    .index("by_tenant_status_created", ["tenantId", "status", "createdAt"])
+    .index("by_tenant_actor_created", ["tenantId", "actorUserId", "createdAt"]),
+
+  agentPlatformAttempts: defineTable({
+    attemptId: v.string(), runId: v.string(), tenantId: v.string(), attemptNumber: v.number(),
+    status: v.union(v.literal("queued"), v.literal("running"), v.literal("succeeded"), v.literal("failed"), v.literal("cancelled"), v.literal("timeout"), v.literal("unknown")),
+    leaseOwner: v.optional(v.string()), fencingToken: v.number(), leaseExpiresAt: v.optional(v.number()), heartbeatAt: v.optional(v.number()),
+    retryOfAttemptId: v.optional(v.string()), startedAt: v.optional(v.number()), completedAt: v.optional(v.number()), errorCode: v.optional(v.string()),
+  })
+    .index("by_tenant_attempt", ["tenantId", "attemptId"])
+    .index("by_tenant_run_attempt", ["tenantId", "runId", "attemptNumber"])
+    .index("by_tenant_status_lease", ["tenantId", "status", "leaseExpiresAt"]),
+
+  agentPlatformEvents: defineTable({
+    eventId: v.string(), tenantId: v.string(), actorUserId: v.string(), conversationId: v.optional(v.string()),
+    interactionRunId: v.optional(v.string()), executionRunId: v.optional(v.string()), attemptId: v.optional(v.string()),
+    sequence: v.number(), type: v.string(), visibility: v.union(v.literal("user"), v.literal("tenant_admin"), v.literal("platform_admin")),
+    payloadRedacted: v.any(), occurredAt: v.number(),
+  })
+    .index("by_tenant_execution_sequence", ["tenantId", "executionRunId", "sequence"])
+    .index("by_tenant_occurred", ["tenantId", "occurredAt"]),
+
+  agentPlatformUsage: defineTable({
+    usageId: v.string(), tenantId: v.string(), actorUserId: v.string(), runId: v.string(), attemptId: v.string(),
+    requestedModel: v.string(), resolvedModel: v.string(), provider: v.optional(v.string()),
+    inputTokens: v.number(), outputTokens: v.number(), reasoningTokens: v.number(), cachedTokens: v.number(),
+    costUsd: v.number(), latencyMs: v.number(), fallbackUsed: v.boolean(), createdAt: v.number(),
+  })
+    .index("by_tenant_run", ["tenantId", "runId"])
+    .index("by_tenant_created", ["tenantId", "createdAt"]),
 });
