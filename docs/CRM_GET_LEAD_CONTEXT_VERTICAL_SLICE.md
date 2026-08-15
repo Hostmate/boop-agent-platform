@@ -92,7 +92,7 @@ Search authorization is not cached. If Agent A resolves a lead and the lead is r
 
 ## 11. AI Chat
 
-AI Chat supports simple lookup, direct name-to-context, composed lookup-to-context, card selection, ordinal selection and pronoun follow-up. Entity cards retain a separate CRM deep link and provide a 44px selection action. Detailed visit history is not fabricated: the V1 DTO can answer only from its next-visit summary.
+AI Chat supports simple lookup, direct name-to-context, composed lookup-to-context, card selection, ordinal selection and pronoun follow-up. Entity cards retain a separate CRM deep link and provide a 44px selection action. This tool still exposes only its compact next-visit summary; detailed history now belongs to the separate `visits.list_lead_visits.v1` Product Tool.
 
 ## 12. AI Platform
 
@@ -141,4 +141,4 @@ Add managed runtime deployment, key rotation, retention, deployed browser smoke 
 
 ## 18. Recomendación para la siguiente capability
 
-Recommend `crm.list_lead_visits.v1`, read-only and EntityRef-based. It answers “¿Qué visitas tiene?” with bounded visit detail while keeping `get_lead_context` small and avoiding any visit write capability.
+The proposed lead-visits capability has been implemented canonically as `visits.list_lead_visits.v1`, owned by Visits and importable by CRM. The next recommendation is `visits.get_visit.v1`, read-only and EntityRef-based, before any visit write capability.
