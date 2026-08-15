@@ -53,6 +53,7 @@ describe("production-oriented OpenRouterAdapter", () => {
       models: ["requested/model", "fallback/model"], parallel_tool_calls: false,
       provider: { allow_fallbacks: true, require_parameters: true },
     });
+    expect((requests[0].tools as any[])[0].function).not.toHaveProperty("strict");
     expect(requests[0]).not.toHaveProperty("model");
   });
 
@@ -90,5 +91,21 @@ describe("production-oriented OpenRouterAdapter", () => {
     const pending = adapter.run({ prompt: "x", systemPrompt: "x", model: "configured/model", mode: "execution", tools: [], abortController: controller }, { budget });
     controller.abort();
     await expect(pending).rejects.toMatchObject({ code: "CANCELLED", retryable: false });
+  });
+
+  it("can stop after a real tool call without paying for a cosmetic second model round", async () => {
+    const handler = vi.fn(async ({ query }: { query: string }) => ({ text: JSON.stringify({ query, matches: [] }) }));
+    const fetchMock = vi.fn(async () => sse([
+      { model: "provider/model", provider: "Provider", choices: [{ delta: { tool_calls: [{ index: 0, id: "call", type: "function", function: { name: "crm__search_leads_0", arguments: '{"query":"Juan"}' } }] }, finish_reason: "tool_calls" }], usage: { prompt_tokens: 8, completion_tokens: 3, cost: 0.001 } },
+    ]));
+    const adapter = new OpenRouterAdapter({ apiKey: "test", maxTransportRetries: 0, fetch: fetchMock });
+    const result = await adapter.run({
+      prompt: "Busca a Juan", systemPrompt: "Use the tool", model: "requested/model", mode: "execution",
+      tools: [defineRuntimeTool("crm", "search_leads", "search", { query: z.string() }, handler)],
+    }, { budget: { timeoutMs: 2_000, maxToolRounds: 0 }, toolChoice: "required", stopAfterToolResult: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith({ query: "Juan" });
+    expect(result.toolResults).toEqual([{ toolName: "search_leads", text: '{"query":"Juan","matches":[]}', success: true }]);
+    expect(result.finishReason).toBe("tool_calls");
   });
 });

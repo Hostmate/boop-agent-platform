@@ -6,7 +6,7 @@ describe("Convex Agent Platform auth characterization", () => {
     const ctx = {
       auth: { getUserIdentity: async () => ({ tenant_id: "tenant-a", user_id: "user-1", subject: "user-1", role: "admin" }) },
     };
-    await expect(requireAgentPlatformActor(ctx as never, { expectedTenantId: "tenant-a", expectedUserId: "user-1" })).resolves.toEqual({ tenantId: "tenant-a", userId: "user-1", role: "admin" });
+    await expect(requireAgentPlatformActor(ctx as never, { expectedTenantId: "tenant-a", expectedUserId: "user-1" })).resolves.toMatchObject({ tenantId: "tenant-a", userId: "user-1", role: "admin", permissions: [] });
     await expect(requireAgentPlatformActor(ctx as never, { expectedTenantId: "tenant-b" })).rejects.toThrow();
   });
 
