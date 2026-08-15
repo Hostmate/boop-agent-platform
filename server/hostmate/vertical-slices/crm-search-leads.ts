@@ -90,7 +90,7 @@ function bindFiltersToObjective(input: CrmSearchLeadsInput, objective: string): 
   const normalizedCity = input.city ? normalizeEvidence(input.city) : undefined;
   const city = normalizedCity && evidence.includes(normalizedCity) ? input.city : undefined;
   const statusEvidence: Record<NonNullable<CrmSearchLeadsInput["status"]>, readonly string[]> = {
-    new: ["new", "nuevo", "nueva"], pending: ["pending", "pendiente"], contacted: ["contacted", "contactado", "contactada"],
+    new: ["new", "nuevo", "nueva"], contacted: ["contacted", "contactado", "contactada"],
     qualified: ["qualified", "cualificado", "cualificada"], visit_scheduled: ["visit scheduled", "visita agendada", "visita programada"],
   };
   const status = input.status && statusEvidence[input.status].some((word) => ` ${evidence} `.includes(` ${word} `)) ? input.status : undefined;
@@ -147,7 +147,6 @@ function visitsFilters(message: string, lead: EntityRef): ListLeadVisitsInput {
     [/\b(confirmada|confirmadas|confirmado|confirmados)\b/, "confirmed"],
     [/\b(completada|completadas|completado|completados)\b/, "completed"],
     [/\b(cancelada|canceladas|cancelado|cancelados)\b/, "cancelled"],
-    [/\b(pendiente|pendientes)\b/, "pending"],
     [/\b(rechazada|rechazadas|rechazado|rechazados)\b/, "rejected"],
     [/\b(flotante|flotantes)\b/, "floating"],
   ];
@@ -184,17 +183,22 @@ function emptyContext(): ConversationContextRefs {
   return { selected: {}, referenced: [] };
 }
 
-function normalizeStoredContext(value: unknown): ConversationContextRefs | undefined {
-  if (!value) return undefined;
-  if (Array.isArray(value)) {
-    const refs = value.filter((item): item is EntityRef => Boolean(item && typeof item === "object" && "type" in item && "id" in item));
-    return {
-      selected: { lead: refs.find((ref) => isLeadRef(ref)), visit: refs.find((ref) => isVisitRef(ref)) },
-      referenced: refs,
-    };
-  }
-  const candidate = value as Partial<ConversationContextRefs>;
-  return candidate.selected ? { selected: candidate.selected, referenced: candidate.referenced ?? [] } : undefined;
+function isEntityRef(value: unknown): value is EntityRef {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<EntityRef>;
+  return typeof candidate.type === "string" && candidate.type.length > 0
+    && typeof candidate.id === "string" && candidate.id.length > 0;
+}
+
+export function normalizeStoredContext(value: unknown): ConversationContextRefs | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const candidate = value as { selected?: unknown; referenced?: unknown };
+  if (!candidate.selected || typeof candidate.selected !== "object" || Array.isArray(candidate.selected)) return undefined;
+  const selected = Object.fromEntries(
+    Object.entries(candidate.selected).filter((entry): entry is [string, EntityRef] => isEntityRef(entry[1])),
+  );
+  const referenced = Array.isArray(candidate.referenced) ? candidate.referenced.filter(isEntityRef) : [];
+  return { selected, referenced };
 }
 
 function latestConversationContext(messages: readonly AgentMessageRecord[]): ConversationContextRefs {

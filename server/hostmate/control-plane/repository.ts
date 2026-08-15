@@ -21,10 +21,12 @@ export type ConversationRecord = Readonly<{
 }>;
 
 export type ConversationContextRefs = Readonly<{
-  selected: Readonly<{
-    lead?: EntityRef;
-    visit?: EntityRef;
-  }>;
+  /**
+   * Semantic selection roles owned by each product extension. The shared
+   * control plane deliberately does not enumerate CRM, visits or future
+   * domains; extensions currently use `lead` and `visit`.
+   */
+  selected: Readonly<Record<string, EntityRef | undefined>>;
   referenced: readonly EntityRef[];
 }>;
 

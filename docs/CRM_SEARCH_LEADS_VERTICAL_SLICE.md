@@ -50,7 +50,7 @@ Hostmate Product: signed token bridge, signed internal CRM adapter, app route mo
 
 Canonical ID: `crm.search_leads.v1`, version `1`, namespace/name `crm.search_leads`, owner/profile `crm`, capability `crm.lead.search`, permission `crm.read`, mode `read`, risk `R0`.
 
-LLM-visible filters are only `query`, `city` and `status`. `query` maps to the existing service search across `client_name`, `client_phone` and `client_email`; `city` maps to the existing `prop_city`; status uses the five real shared values. Page and limit are not model-controlled: backend fixes page 1 and limit 5. Strings and request messages are bounded. Unknown fields fail.
+LLM-visible filters are only `query`, `city` and `status`. `query` maps to the existing service search across `client_name`, `client_phone` and `client_email`; `city` maps to the existing `prop_city`; status uses the four canonical shared values (`new`, `contacted`, `qualified`, `visit_scheduled`). Page and limit are not model-controlled: backend fixes page 1 and limit 5. Strings and request messages are bounded. Unknown fields fail.
 
 ## 4. ActorContext
 
@@ -158,7 +158,7 @@ Fork suite: 102 tests pass, including search/context contracts, composition, amb
 4. Hostmate route/UI/service permission semantics remain historically inconsistent; Agent Platform now enforces the approved rule independently.
 5. `lead.service.list` took about 2.59 seconds in the latest composed live read; it remains untouched pending measurement-led optimization.
 6. Convex previously accepted `blocks` and `runId` but dropped them in `appendMessage`; persistence was fixed while adding conversation-scoped `contextRefs`.
-7. The unrelated pre-existing API typecheck error for missing `appendIgDmOpenTracking` remains and was not modified.
+7. The obsolete feature base imported `appendIgDmOpenTracking`; current Hostmate `main` already uses the real `appendUtmMsg` export, so no DM refactor was required.
 
 ## 22. Deuda técnica
 

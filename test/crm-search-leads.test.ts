@@ -30,7 +30,7 @@ import {
 } from "../server/hostmate/product-tools/visits/get-visit.js";
 import { OpenRouterAdapter } from "../server/hostmate/runtime/openrouter-adapter.js";
 import { ProductToolRegistry } from "../server/hostmate/tools/registry.js";
-import { CrmSearchLeadsVerticalSlice } from "../server/hostmate/vertical-slices/crm-search-leads.js";
+import { CrmSearchLeadsVerticalSlice, normalizeStoredContext } from "../server/hostmate/vertical-slices/crm-search-leads.js";
 
 function actor(tenantId = "7", permissions: string[] = ["crm.read", "visits.read"]) {
   return createActorContext({ tenantId, userId: "10", role: "agent", isSuperAdmin: false, permissions, locale: "es-ES", timezone: "Europe/Madrid", sessionId: "s-10", permissionsVersion: "v1" });
@@ -570,5 +570,16 @@ describe("crm.search_leads vertical slice", () => {
     expect(first.result).toMatchObject({ status: "permission_denied", errors: [{ code: "PERMISSION_DENIED" }] });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(search.search).not.toHaveBeenCalled();
+  });
+
+  it("keeps semantic context roles generic and rejects the pre-foundation array shape", () => {
+    expect(normalizeStoredContext({
+      selected: { property: { type: "properties.property", id: "55", label: "Ático Centro" } },
+      referenced: [{ type: "crm.lead", id: "123" }],
+    })).toEqual({
+      selected: { property: { type: "properties.property", id: "55", label: "Ático Centro" } },
+      referenced: [{ type: "crm.lead", id: "123" }],
+    });
+    expect(normalizeStoredContext([{ type: "crm.lead", id: "123" }])).toBeUndefined();
   });
 });

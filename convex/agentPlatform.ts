@@ -24,6 +24,30 @@ async function tenantRun(ctx: Parameters<typeof requireAgentPlatformActor>[0], t
     .unique();
 }
 
+async function ownedTenantRun(ctx: Parameters<typeof requireAgentPlatformActor>[0], tenantId: string, userId: string, runId: string) {
+  const run = await tenantRun(ctx, tenantId, runId);
+  if (!run || run.actorUserId !== userId) throw new ConvexError("RUN_FORBIDDEN");
+  return run;
+}
+
+async function tenantConversation(ctx: Parameters<typeof requireAgentPlatformActor>[0], tenantId: string, conversationId: string) {
+  return await ctx.db.query("agentPlatformConversations")
+    .withIndex("by_tenant_conversation", (q) => q.eq("tenantId", tenantId).eq("conversationId", conversationId))
+    .unique();
+}
+
+async function tenantAttempt(ctx: Parameters<typeof requireAgentPlatformActor>[0], tenantId: string, attemptId: string) {
+  return await ctx.db.query("agentPlatformAttempts")
+    .withIndex("by_tenant_attempt", (q) => q.eq("tenantId", tenantId).eq("attemptId", attemptId)).unique();
+}
+
+async function ownedAttempt(ctx: Parameters<typeof requireAgentPlatformActor>[0], tenantId: string, userId: string, attemptId: string) {
+  const attempt = await tenantAttempt(ctx, tenantId, attemptId);
+  if (!attempt) throw new ConvexError("ATTEMPT_NOT_FOUND");
+  await ownedTenantRun(ctx, tenantId, userId, attempt.runId);
+  return attempt;
+}
+
 export const currentActor = query({
   args: {},
   handler: async (ctx) => await requireAgentPlatformActor(ctx),
@@ -33,9 +57,7 @@ export const createConversation = mutation({
   args: { conversationId: v.string(), title: v.optional(v.string()), ...expectedActorArgs },
   handler: async (ctx, args) => {
     const actor = await requireAgentPlatformActor(ctx, args);
-    const existing = await ctx.db.query("agentPlatformConversations")
-      .withIndex("by_tenant_conversation", (q) => q.eq("tenantId", actor.tenantId).eq("conversationId", args.conversationId))
-      .unique();
+    const existing = await tenantConversation(ctx, actor.tenantId, args.conversationId);
     if (existing) throw new ConvexError("CONVERSATION_ALREADY_EXISTS");
     const now = Date.now();
     const value = { conversationId: args.conversationId, tenantId: actor.tenantId, ownerUserId: actor.userId, title: args.title, createdAt: now, updatedAt: now };
@@ -51,10 +73,13 @@ export const appendMessage = mutation({
   },
   handler: async (ctx, args) => {
     const actor = await requireAgentPlatformActor(ctx, args);
-    const conversation = await ctx.db.query("agentPlatformConversations")
-      .withIndex("by_tenant_conversation", (q) => q.eq("tenantId", actor.tenantId).eq("conversationId", args.conversationId)).unique();
+    const conversation = await tenantConversation(ctx, actor.tenantId, args.conversationId);
     if (!conversation) return [];
     if (conversation.ownerUserId !== actor.userId) throw new ConvexError("CONVERSATION_FORBIDDEN");
+    if (args.runId) {
+      const run = await ownedTenantRun(ctx, actor.tenantId, actor.userId, args.runId);
+      if (run.conversationId !== args.conversationId) throw new ConvexError("RUN_CONVERSATION_MISMATCH");
+    }
     const value = {
       messageId: args.messageId, conversationId: args.conversationId, tenantId: actor.tenantId,
       actorUserId: actor.userId, role: args.role, contentRedacted: args.contentRedacted,
@@ -71,8 +96,7 @@ export const listMessages = query({
   args: { conversationId: v.string(), limit: v.number(), ...expectedActorArgs },
   handler: async (ctx, args) => {
     const actor = await requireAgentPlatformActor(ctx, args);
-    const conversation = await ctx.db.query("agentPlatformConversations")
-      .withIndex("by_tenant_conversation", (q) => q.eq("tenantId", actor.tenantId).eq("conversationId", args.conversationId)).unique();
+    const conversation = await tenantConversation(ctx, actor.tenantId, args.conversationId);
     if (!conversation || conversation.ownerUserId !== actor.userId) throw new ConvexError("CONVERSATION_FORBIDDEN");
     const limit = Math.max(1, Math.min(200, Math.floor(args.limit)));
     return await ctx.db.query("agentPlatformMessages")
@@ -92,6 +116,12 @@ export const createRun = mutation({
   handler: async (ctx, args) => {
     const actor = await requireAgentPlatformActor(ctx, args);
     if (await tenantRun(ctx, actor.tenantId, args.runId)) throw new ConvexError("RUN_ALREADY_EXISTS");
+    if (args.conversationId) {
+      const conversation = await tenantConversation(ctx, actor.tenantId, args.conversationId);
+      if (!conversation || conversation.ownerUserId !== actor.userId) throw new ConvexError("CONVERSATION_FORBIDDEN");
+    }
+    const linkedRunIds = [args.parentRunId, ...args.dependencyRunIds].filter((runId): runId is string => Boolean(runId));
+    for (const linkedRunId of linkedRunIds) await ownedTenantRun(ctx, actor.tenantId, actor.userId, linkedRunId);
     const now = Date.now();
     const { expectedTenantId: _tenant, expectedUserId: _user, ...input } = args;
     const value = { ...input, tenantId: actor.tenantId, actorUserId: actor.userId, status: "queued" as const, createdAt: now, updatedAt: now };
@@ -129,8 +159,7 @@ export const updateRun = mutation({
   },
   handler: async (ctx, args) => {
     const actor = await requireAgentPlatformActor(ctx, args);
-    const run = await tenantRun(ctx, actor.tenantId, args.runId);
-    if (!run || run.actorUserId !== actor.userId) throw new ConvexError("RUN_FORBIDDEN");
+    const run = await ownedTenantRun(ctx, actor.tenantId, actor.userId, args.runId);
     if (args.expectedStatus && run.status !== args.expectedStatus) throw new ConvexError("RUN_STATUS_CONFLICT");
     await ctx.db.patch(run._id, { ...args.patch, updatedAt: Date.now() });
     return { ...run, ...args.patch, updatedAt: Date.now() };
@@ -145,6 +174,17 @@ export const appendEvent = mutation({
   },
   handler: async (ctx, args) => {
     const actor = await requireAgentPlatformActor(ctx, args);
+    if (args.conversationId) {
+      const conversation = await tenantConversation(ctx, actor.tenantId, args.conversationId);
+      if (!conversation || conversation.ownerUserId !== actor.userId) throw new ConvexError("CONVERSATION_FORBIDDEN");
+    }
+    for (const runId of [args.interactionRunId, args.executionRunId]) {
+      if (runId) await ownedTenantRun(ctx, actor.tenantId, actor.userId, runId);
+    }
+    if (args.attemptId) {
+      const attempt = await ownedAttempt(ctx, actor.tenantId, actor.userId, args.attemptId);
+      if (args.executionRunId && attempt.runId !== args.executionRunId) throw new ConvexError("ATTEMPT_RUN_MISMATCH");
+    }
     const { expectedTenantId: _tenant, expectedUserId: _user, payload, ...input } = args;
     const value = { ...input, tenantId: actor.tenantId, actorUserId: actor.userId, payloadRedacted: payload };
     await ctx.db.insert("agentPlatformEvents", value);
@@ -173,8 +213,8 @@ export const createAttempt = mutation({
   },
   handler: async (ctx, args) => {
     const actor = await requireAgentPlatformActor(ctx, args);
-    const run = await tenantRun(ctx, actor.tenantId, args.runId);
-    if (!run) throw new ConvexError("RUN_NOT_FOUND");
+    await ownedTenantRun(ctx, actor.tenantId, actor.userId, args.runId);
+    if (await tenantAttempt(ctx, actor.tenantId, args.attemptId)) throw new ConvexError("ATTEMPT_ALREADY_EXISTS");
     const { expectedTenantId: _tenant, expectedUserId: _user, ...input } = args;
     const value = { ...input, tenantId: actor.tenantId };
     await ctx.db.insert("agentPlatformAttempts", value);
@@ -190,9 +230,7 @@ export const updateAttempt = mutation({
   },
   handler: async (ctx, args) => {
     const actor = await requireAgentPlatformActor(ctx, args);
-    const attempt = await ctx.db.query("agentPlatformAttempts")
-      .withIndex("by_tenant_attempt", (q) => q.eq("tenantId", actor.tenantId).eq("attemptId", args.attemptId)).unique();
-    if (!attempt) throw new ConvexError("ATTEMPT_NOT_FOUND");
+    const attempt = await ownedAttempt(ctx, actor.tenantId, actor.userId, args.attemptId);
     if (args.expectedStatus && attempt.status !== args.expectedStatus) throw new ConvexError("ATTEMPT_STATUS_CONFLICT");
     await ctx.db.patch(attempt._id, args.patch);
     return { ...attempt, ...args.patch };
@@ -203,9 +241,9 @@ export const acquireLease = mutation({
   args: { runId: v.string(), attemptId: v.string(), leaseOwner: v.string(), now: v.number(), leaseDurationMs: v.number(), ...expectedActorArgs },
   handler: async (ctx, args) => {
     const actor = await requireAgentPlatformActor(ctx, args);
-    const attempt = await ctx.db.query("agentPlatformAttempts")
-      .withIndex("by_tenant_attempt", (q) => q.eq("tenantId", actor.tenantId).eq("attemptId", args.attemptId)).unique();
+    const attempt = await tenantAttempt(ctx, actor.tenantId, args.attemptId);
     if (!attempt || attempt.runId !== args.runId) return null;
+    await ownedTenantRun(ctx, actor.tenantId, actor.userId, attempt.runId);
     if (attempt.status === "running" && (attempt.leaseExpiresAt ?? 0) > args.now) return null;
     if (attempt.status !== "queued" && attempt.status !== "running") return null;
     const patch = { status: "running" as const, leaseOwner: args.leaseOwner, fencingToken: attempt.fencingToken + 1, leaseExpiresAt: args.now + args.leaseDurationMs, heartbeatAt: args.now, startedAt: attempt.startedAt ?? args.now };
@@ -218,9 +256,9 @@ export const heartbeat = mutation({
   args: { runId: v.string(), attemptId: v.string(), leaseOwner: v.string(), fencingToken: v.number(), leaseExpiresAt: v.number(), ...expectedActorArgs },
   handler: async (ctx, args) => {
     const actor = await requireAgentPlatformActor(ctx, args);
-    const attempt = await ctx.db.query("agentPlatformAttempts")
-      .withIndex("by_tenant_attempt", (q) => q.eq("tenantId", actor.tenantId).eq("attemptId", args.attemptId)).unique();
+    const attempt = await tenantAttempt(ctx, actor.tenantId, args.attemptId);
     if (!attempt || attempt.runId !== args.runId || attempt.status !== "running" || attempt.leaseOwner !== args.leaseOwner || attempt.fencingToken !== args.fencingToken) return false;
+    await ownedTenantRun(ctx, actor.tenantId, actor.userId, attempt.runId);
     await ctx.db.patch(attempt._id, { heartbeatAt: Date.now(), leaseExpiresAt: args.leaseExpiresAt });
     return true;
   },
@@ -230,8 +268,7 @@ export const requestCancellation = mutation({
   args: { runId: v.string(), requestedAt: v.number(), ...expectedActorArgs },
   handler: async (ctx, args) => {
     const actor = await requireAgentPlatformActor(ctx, args);
-    const run = await tenantRun(ctx, actor.tenantId, args.runId);
-    if (!run || !canReadTenantRun(actor, run)) throw new ConvexError("RUN_FORBIDDEN");
+    const run = await ownedTenantRun(ctx, actor.tenantId, actor.userId, args.runId);
     const patch = { cancelRequestedAt: args.requestedAt, updatedAt: Date.now() };
     await ctx.db.patch(run._id, patch);
     return { ...run, ...patch };
@@ -245,6 +282,9 @@ export const recordUsage = mutation({
   },
   handler: async (ctx, args) => {
     const actor = await requireAgentPlatformActor(ctx, args);
+    await ownedTenantRun(ctx, actor.tenantId, actor.userId, args.runId);
+    const attempt = await ownedAttempt(ctx, actor.tenantId, actor.userId, args.attemptId);
+    if (attempt.runId !== args.runId) throw new ConvexError("ATTEMPT_RUN_MISMATCH");
     const { expectedTenantId: _tenant, expectedUserId: _user, ...input } = args;
     await ctx.db.insert("agentPlatformUsage", { ...input, tenantId: actor.tenantId, actorUserId: actor.userId });
   },

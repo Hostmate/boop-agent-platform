@@ -44,12 +44,12 @@ La taxonomía queda fijada en `visits.visit`, `visits.group_visit`, `crm.lead` y
 
 ```ts
 {
-  selected: { lead?: EntityRef; visit?: EntityRef };
+  selected: Readonly<Record<string, EntityRef | undefined>>;
   referenced: EntityRef[];
 }
 ```
 
-`selected` mantiene el foco conversacional; `referenced` registra las entidades del último resultado. Los bloques y `ExecutionResult.entities` siguen siendo el resultado visible. El resolver conserva compatibilidad de lectura con mensajes antiguos que tengan un array.
+`selected` mantiene focos semánticos definidos por cada extensión (`lead`, `visit` y futuros roles); `referenced` registra las entidades del último resultado. Los bloques y `ExecutionResult.entities` siguen siendo el resultado visible. La compatibilidad experimental con arrays se eliminó antes de producción.
 
 ## 10. Selected lead + selected visit semantics
 
@@ -97,7 +97,7 @@ Las tablas grupales legacy pueden contener una inscripción apuntando a un lead 
 
 ## 21. Deuda técnica
 
-`visit.service.getById` sigue construyendo una respuesta legacy amplia para otras pantallas; el facade Agent Platform la reduce antes de cruzar el boundary, pero una futura refactorización del dominio podría ofrecer una proyección de detalle explícita. `RE_Group_Visits` y registrations continúan fuera del schema Prisma. El typecheck global de API conserva un fallo ajeno y previo en `dm-agent-v3/executor.ts`, que importa `appendIgDmOpenTracking` sin export existente.
+`visit.service.getById` sigue construyendo una respuesta legacy amplia para otras pantallas; el facade Agent Platform la reduce antes de cruzar el boundary, pero una futura refactorización del dominio podría ofrecer una proyección de detalle explícita. `RE_Group_Visits` y registrations continúan fuera del schema Prisma. El supuesto fallo `appendIgDmOpenTracking` pertenecía a la base obsoleta; el `main` integrado usa `appendUtmMsg` y el typecheck queda verde.
 
 ## 22. Recomendación del siguiente paso
 

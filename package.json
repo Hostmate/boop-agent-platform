@@ -33,7 +33,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
-    "e2e:crm-search-leads": "tsx scripts/crm-search-leads-live-e2e.ts"
+    "e2e:agent-platform-read-regression": "tsx scripts/agent-platform-read-regression-e2e.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.0",

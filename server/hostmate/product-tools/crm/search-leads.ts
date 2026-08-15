@@ -8,7 +8,7 @@ export const CRM_SEARCH_LEADS_TOOL_ID = "crm.search_leads.v1";
 export const CRM_SEARCH_LEADS_TOOL_VERSION = 1;
 export const CRM_SEARCH_LEADS_PERMISSION = "crm.read";
 
-const LEAD_STATUSES = ["new", "pending", "contacted", "qualified", "visit_scheduled"] as const;
+const LEAD_STATUSES = ["new", "contacted", "qualified", "visit_scheduled"] as const;
 
 export const crmSearchLeadsInputShape = {
   query: z.string().trim().max(120).optional().describe("Nombre, teléfono o email del lead. Omite el campo si no aplica; no incluyas IDs ni tenant."),
