@@ -73,7 +73,7 @@ Selected lead follow-up calls only Visits. A direct “Busca a X y dime qué vis
 
 ## 11. Conversational context
 
-The selected `crm.lead` ref is persisted in message `contextRefs`, separately from result visit refs. After a visits answer, later follow-ups still resolve the lead rather than treating a visit card as the selected lead. The E2E reconstructs the Convex client, repository and slice before asking “¿Qué visitas tiene?” and resolves the durable lead ref successfully.
+The selected `crm.lead` ref is persisted in semantic message `contextRefs.selected.lead`, separately from result visit refs in `referenced`. A selected visit is stored independently in `selected.visit`, so lead and visit can coexist. After a visits answer, later lead follow-ups still resolve the lead; visit detail requires explicit/ordinal visit selection. Legacy array-shaped messages remain readable.
 
 ## 12. Tool scoping
 
@@ -98,7 +98,7 @@ Execution details expose Interaction/Execution hierarchy, exact mixed-domain too
 
 ## 16. Realtime/reconnect
 
-Messages, lead `contextRefs`, runs, attempts, usage and redacted events remain durable in Convex and reactive in both surfaces. The live test observed two durable messages after the composed turn, then four after reconnect plus follow-up. This context is conversational state, not permanent Memory.
+Messages, semantic `contextRefs`, runs, attempts, usage and redacted events remain durable in Convex and reactive in both surfaces. Reconnect reconstructs both selected lead and selected visit when present. This context is conversational state, not permanent Memory.
 
 ## 17. Performance
 
@@ -141,4 +141,4 @@ Add a durable explicit `lead_id` relation for future visit writes only through a
 
 ## 21. Recomendación para siguiente capability
 
-Recommend `visits.get_visit.v1`: a read-only, visit-EntityRef-based detail capability that can validate the new visit refs and keep list DTOs compact. It should precede any reschedule/cancel/confirm write and is not implemented in this slice.
+`visits.get_visit.v1` is now implemented as the read-only, visit-EntityRef-based detail capability described in `VISITS_GET_VISIT_VERTICAL_SLICE.md`. No reschedule/cancel/confirm write was added.

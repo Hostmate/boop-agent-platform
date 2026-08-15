@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { ActorContext } from "../contracts/actor-context.js";
 import type { EntityRef } from "../contracts/domain.js";
 import type { AgentContentBlock, ExecutionResult } from "../contracts/execution-result.js";
-import type { AgentMessageRecord, ControlPlaneRepository } from "../control-plane/repository.js";
+import type { AgentMessageRecord, ControlPlaneRepository, ConversationContextRefs } from "../control-plane/repository.js";
 import { redactEventPayload } from "../events/contracts.js";
 import { ExecutionDispatchResolver } from "../interaction/dispatch.js";
 import { DefaultPolicyEngine } from "../policy/engine.js";
@@ -32,6 +32,14 @@ import {
   type ListLeadVisitsInput,
   type ListLeadVisitsOutput,
 } from "../product-tools/visits/list-lead-visits.js";
+import {
+  VISITS_GET_VISIT_TOOL_ID,
+  VisitDetailPortError,
+  createGetVisitTool,
+  toVisitDetailExecutionResult,
+  type GetVisitOutput,
+  type VisitDetailPort,
+} from "../product-tools/visits/get-visit.js";
 import { OpenRouterAdapter, OpenRouterRuntimeError, type OpenRouterRuntimeResult } from "../runtime/openrouter-adapter.js";
 import { SkillRegistry } from "../skills/registry.js";
 import { ProductToolRegistry } from "../tools/registry.js";
@@ -47,6 +55,7 @@ export type CrmLeadReadData = Readonly<{
   search?: CrmSearchLeadsOutput;
   context?: CrmGetLeadContextOutput;
   visits?: ListLeadVisitsOutput;
+  visitDetail?: GetVisitOutput;
 }>;
 
 export type CrmSearchLeadsTurnResult = Readonly<{
@@ -57,7 +66,7 @@ export type CrmSearchLeadsTurnResult = Readonly<{
   runtime?: OpenRouterRuntimeResult;
 }>;
 
-type CapabilityPlan = "search" | "search+context" | "context" | "search+visits" | "visits";
+type CapabilityPlan = "search" | "search+context" | "context" | "search+visits" | "visits" | "detail" | "visits+detail" | "search+visits+detail";
 
 function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -95,6 +104,11 @@ function wantsLeadContext(message: string): boolean {
 
 function wantsLeadVisits(message: string): boolean {
   return /\b(visita|visitas|cita|citas)\b/.test(normalizeEvidence(message));
+}
+
+function wantsVisitDetail(message: string): boolean {
+  const value = normalizeEvidence(message);
+  return /\b(cuentame mas|mas detalle|mas detalles|detalle de (la|esta|esa) visita|detalle completo|amplia|ampliar)\b/.test(value);
 }
 
 function asksToSearch(message: string): boolean {
@@ -140,9 +154,10 @@ function visitsFilters(message: string, lead: EntityRef): ListLeadVisitsInput {
   return { lead: { type: "crm.lead", id: lead.id, label: lead.label, deepLink: lead.deepLink }, scope, status: statusEvidence.find(([pattern]) => pattern.test(value))?.[1] };
 }
 
-function latestEntityList(messages: readonly AgentMessageRecord[]): AgentContentBlock | undefined {
+function latestEntityList(messages: readonly AgentMessageRecord[], typePrefix?: string): AgentContentBlock | undefined {
   for (const message of [...messages].reverse()) {
-    const block = [...(message.blocks ?? [])].reverse().find((candidate) => candidate.type === "entity_list" && candidate.items.some((item) => item.ref.type === "crm.lead"));
+    const block = [...(message.blocks ?? [])].reverse().find((candidate) => candidate.type === "entity_list"
+      && candidate.items.some((item) => !typePrefix || item.ref.type.startsWith(typePrefix)));
     if (block) return block;
   }
   return undefined;
@@ -151,27 +166,68 @@ function latestEntityList(messages: readonly AgentMessageRecord[]): AgentContent
 function ordinalIndex(message: string): number | undefined {
   const value = normalizeEvidence(message);
   const ordinals: ReadonlyArray<readonly [RegExp, number]> = [
-    [/\b(el )?(primero|primera|1)\b/, 0], [/\b(el )?(segundo|segunda|2)\b/, 1],
-    [/\b(el )?(tercero|tercera|3)\b/, 2], [/\b(el )?(cuarto|cuarta|4)\b/, 3], [/\b(el )?(quinto|quinta|5)\b/, 4],
+    [/\b((el|la) )?(primero|primera|1)\b/, 0], [/\b((el|la) )?(segundo|segunda|2)\b/, 1],
+    [/\b((el|la) )?(tercero|tercera|3)\b/, 2], [/\b((el|la) )?(cuarto|cuarta|4)\b/, 3], [/\b((el|la) )?(quinto|quinta|5)\b/, 4],
   ];
   return ordinals.find(([pattern]) => pattern.test(value))?.[1];
+}
+
+function isLeadRef(ref: EntityRef | undefined): ref is EntityRef {
+  return ref?.type === "crm.lead";
+}
+
+function isVisitRef(ref: EntityRef | undefined): ref is EntityRef {
+  return ref?.type === "visits.visit" || ref?.type === "visits.group_visit";
+}
+
+function emptyContext(): ConversationContextRefs {
+  return { selected: {}, referenced: [] };
+}
+
+function normalizeStoredContext(value: unknown): ConversationContextRefs | undefined {
+  if (!value) return undefined;
+  if (Array.isArray(value)) {
+    const refs = value.filter((item): item is EntityRef => Boolean(item && typeof item === "object" && "type" in item && "id" in item));
+    return {
+      selected: { lead: refs.find((ref) => isLeadRef(ref)), visit: refs.find((ref) => isVisitRef(ref)) },
+      referenced: refs,
+    };
+  }
+  const candidate = value as Partial<ConversationContextRefs>;
+  return candidate.selected ? { selected: candidate.selected, referenced: candidate.referenced ?? [] } : undefined;
+}
+
+function latestConversationContext(messages: readonly AgentMessageRecord[]): ConversationContextRefs {
+  for (const message of [...messages].reverse()) {
+    const context = normalizeStoredContext(message.contextRefs);
+    if (context) return context;
+  }
+  return emptyContext();
+}
+
+function withSelectedRef(context: ConversationContextRefs, ref: EntityRef | undefined): ConversationContextRefs {
+  if (!ref) return context;
+  if (isLeadRef(ref)) return { selected: { lead: ref }, referenced: context.referenced };
+  if (isVisitRef(ref)) return { selected: { ...context.selected, visit: ref }, referenced: context.referenced };
+  return context;
 }
 
 function resolveConversationRef(messages: readonly AgentMessageRecord[], message: string): EntityRef | undefined {
   if (hasExplicitLeadTarget(message)) return undefined;
   const ordinal = ordinalIndex(message);
   if (ordinal !== undefined) return latestEntityList(messages)?.items[ordinal]?.ref;
-  if (!isAnaphoric(message) && !isEntityFollowUp(message)) return undefined;
-  for (const prior of [...messages].reverse()) {
-    if (prior.contextRefs?.length === 1) return prior.contextRefs[0];
-    const refs = (prior.blocks ?? []).flatMap((block) => block.items.map((item) => item.ref));
-    if (refs.length === 1) return refs[0];
-  }
+  if (!isAnaphoric(message) && !isEntityFollowUp(message) && !wantsVisitDetail(message)) return undefined;
+  const context = latestConversationContext(messages);
+  if (wantsVisitDetail(message) && context.selected.visit) return context.selected.visit;
+  if (context.selected.lead) return context.selected.lead;
+  if (context.selected.visit) return context.selected.visit;
+  const refs = (latestEntityList(messages)?.items ?? []).map((item) => item.ref);
+  if (refs.length === 1) return refs[0];
   return undefined;
 }
 
 function ambiguityResult(messages: readonly AgentMessageRecord[]): ExecutionResult<CrmLeadReadData> {
-  const block = latestEntityList(messages);
+  const block = latestEntityList(messages, "crm.");
   return {
     status: "needs_input",
     summary: "Necesito que selecciones uno de los candidatos antes de continuar.",
@@ -183,16 +239,17 @@ function ambiguityResult(messages: readonly AgentMessageRecord[]): ExecutionResu
 function normalizedFailure(error: unknown): ExecutionResult<CrmLeadReadData> {
   const contextError = error instanceof LeadContextPortError ? error : null;
   const visitsError = error instanceof LeadVisitsPortError ? error : null;
+  const visitDetailError = error instanceof VisitDetailPortError ? error : null;
   const runtime = error instanceof OpenRouterRuntimeError ? error : null;
-  const code = contextError?.code ?? visitsError?.code ?? runtime?.code ?? "INTERNAL";
+  const code = contextError?.code ?? visitsError?.code ?? visitDetailError?.code ?? runtime?.code ?? "INTERNAL";
   const denied = code === "PERMISSION_DENIED" || code === "POLICY_DENIED" || code === "STALE_REFERENCE";
   const missing = code === "NOT_FOUND";
   return {
     status: denied ? "permission_denied" : "failed",
     summary: denied
-      ? "Ese lead ya no está disponible dentro de tu scope asignado."
-      : missing ? "El lead ya no existe o no pertenece al tenant efectivo." : "No se pudo completar la consulta CRM.",
-    entities: [], errors: [{ code, message: contextError?.message ?? visitsError?.message ?? runtime?.message ?? "Internal execution error", retryable: runtime?.retryable ?? false, details: runtime?.details }],
+      ? "Esa referencia ya no está disponible dentro de tu scope actual."
+      : missing ? "La entidad ya no existe o no pertenece al tenant efectivo." : "No se pudo completar la consulta CRM.",
+    entities: [], errors: [{ code, message: contextError?.message ?? visitsError?.message ?? visitDetailError?.message ?? runtime?.message ?? "Internal execution error", retryable: runtime?.retryable ?? false, details: runtime?.details }],
     suggestedNext: runtime?.retryable ? ["Vuelve a intentarlo en unos instantes."] : undefined,
   };
 }
@@ -203,6 +260,7 @@ export class CrmSearchLeadsVerticalSlice {
     private readonly leadSearch: LeadSearchPort,
     private readonly leadContext: LeadContextPort,
     private readonly leadVisits: LeadVisitsPort,
+    private readonly visitDetail: VisitDetailPort,
     private readonly runtime: OpenRouterAdapter,
     private readonly config: CrmSearchLeadsSliceConfig,
   ) {
@@ -221,11 +279,16 @@ export class CrmSearchLeadsVerticalSlice {
       await this.repository.createConversation(actor, { conversationId: input.conversationId, title: "AI Chat" });
       priorMessages = [];
     }
+    const priorContext = latestConversationContext(priorMessages);
     const contextualRef = input.selectedEntityRef ?? resolveConversationRef(priorMessages, message);
+    let conversationContext = withSelectedRef(
+      hasExplicitLeadTarget(message) && !input.selectedEntityRef ? emptyContext() : priorContext,
+      contextualRef,
+    );
     let messageSequence = (priorMessages.at(-1)?.sequence ?? 0) + 1;
     await this.repository.appendMessage(actor, {
       messageId: randomUUID(), conversationId: input.conversationId, role: "user", contentRedacted: message,
-      contextRefs: contextualRef ? [contextualRef] : undefined, sequence: messageSequence++, createdAt: now,
+      contextRefs: conversationContext, sequence: messageSequence++, createdAt: now,
     });
 
     let eventSequence = 0;
@@ -248,22 +311,31 @@ export class CrmSearchLeadsVerticalSlice {
     await event("interaction.started", { profile: "crm", objective: redactObjective(message) });
 
     const asksVisits = wantsLeadVisits(message);
+    const directVisitDetail = isVisitRef(contextualRef)
+      && (Boolean(input.selectedEntityRef) || ordinalIndex(message) !== undefined || wantsVisitDetail(message));
+    const composedVisitDetail = !directVisitDetail && asksVisits && wantsVisitDetail(message);
     const asksContext = wantsLeadContext(message) || ordinalIndex(message) !== undefined;
-    const needsEntity = asksContext || asksVisits;
-    const plan: CapabilityPlan = contextualRef
-      ? asksVisits ? "visits" : "context"
-      : asksVisits ? "search+visits" : asksContext ? "search+context" : "search";
-    if (!contextualRef && needsEntity && (isAnaphoric(message) || isEntityFollowUp(message)) && !hasExplicitLeadTarget(message)) {
+    const selectedLead = conversationContext.selected.lead;
+    const needsEntity = asksContext || asksVisits || wantsVisitDetail(message);
+    const plan: CapabilityPlan = directVisitDetail
+      ? "detail"
+      : asksVisits && selectedLead
+        ? composedVisitDetail ? "visits+detail" : "visits"
+        : asksVisits
+          ? composedVisitDetail ? "search+visits+detail" : "search+visits"
+          : selectedLead ? "context" : asksContext ? "search+context" : "search";
+    if (!contextualRef && !selectedLead && needsEntity && (isAnaphoric(message) || isEntityFollowUp(message) || wantsVisitDetail(message)) && !hasExplicitLeadTarget(message)) {
       const result = ambiguityResult(priorMessages);
       await event("interaction.needs_input", { reason: "ambiguous_conversation_reference", candidateCount: result.entities.length });
       await this.repository.updateRun(actor, interactionRunId, { status: "completed", resultSummary: result.summary, completedAt: Date.now() }, "running");
-      await this.persistAssistant(actor, input.conversationId, messageSequence, undefined, result);
+      await this.persistAssistant(actor, input.conversationId, messageSequence, undefined, result, conversationContext);
       return { conversationId: input.conversationId, interactionRunId, result };
     }
 
     let searchOutput: CrmSearchLeadsOutput | undefined;
     let contextOutput: CrmGetLeadContextOutput | undefined;
     let visitsOutput: ListLeadVisitsOutput | undefined;
+    let visitDetailOutput: GetVisitOutput | undefined;
     const objectiveBoundPort: LeadSearchPort = {
       search: (context, toolInput) => this.leadSearch.search(context, bindFiltersToObjective(toolInput, message)),
     };
@@ -271,22 +343,30 @@ export class CrmSearchLeadsVerticalSlice {
       createCrmSearchLeadsTool({ port: objectiveBoundPort, onResult: (output) => { searchOutput = output; } }),
       createCrmGetLeadContextTool({ port: this.leadContext, onResult: (output) => { contextOutput = output; } }),
       createListLeadVisitsTool({ port: this.leadVisits, onResult: (output) => { visitsOutput = output; } }),
+      createGetVisitTool({ port: this.visitDetail, onResult: (output) => { visitDetailOutput = output; } }),
     ]);
     const allowedToolIds = plan === "search" ? [CRM_SEARCH_LEADS_TOOL_ID]
       : plan === "context" ? [CRM_GET_LEAD_CONTEXT_TOOL_ID]
       : plan === "visits" ? [VISITS_LIST_LEAD_VISITS_TOOL_ID]
       : plan === "search+visits" ? [CRM_SEARCH_LEADS_TOOL_ID, VISITS_LIST_LEAD_VISITS_TOOL_ID]
+      : plan === "detail" ? [VISITS_GET_VISIT_TOOL_ID]
+      : plan === "visits+detail" ? [VISITS_LIST_LEAD_VISITS_TOOL_ID, VISITS_GET_VISIT_TOOL_ID]
+      : plan === "search+visits+detail" ? [CRM_SEARCH_LEADS_TOOL_ID, VISITS_LIST_LEAD_VISITS_TOOL_ID, VISITS_GET_VISIT_TOOL_ID]
       : [CRM_SEARCH_LEADS_TOOL_ID, CRM_GET_LEAD_CONTEXT_TOOL_ID];
     const capabilities = plan === "search" ? ["crm.lead.search"]
       : plan === "context" ? ["crm.lead.context"]
       : plan === "visits" ? ["visits.lead.list"]
       : plan === "search+visits" ? ["crm.lead.search", "visits.lead.list"]
+      : plan === "detail" ? ["visits.visit.detail"]
+      : plan === "visits+detail" ? ["visits.lead.list", "visits.visit.detail"]
+      : plan === "search+visits+detail" ? ["crm.lead.search", "visits.lead.list", "visits.visit.detail"]
       : ["crm.lead.search", "crm.lead.context"];
     const dispatch = new ExecutionDispatchResolver(new ExecutionProfileRegistry(), toolRegistry, new SkillRegistry()).resolve({
       actor, allowedToolIds, featureEnabled: (toolId) => allowedToolIds.includes(toolId),
       request: {
         profileId: "crm", objective: message, objectiveClasses: ["lead.lookup"], objectiveCapabilities: capabilities,
-        inputRefs: contextualRef ? [contextualRef] : [], dependencyRunIds: [], skillHints: plan === "context" || plan === "visits" ? [] : ["resolve-ambiguous-lead"],
+        inputRefs: [conversationContext.selected.lead, conversationContext.selected.visit].filter((ref): ref is EntityRef => Boolean(ref)),
+        dependencyRunIds: [], skillHints: plan === "context" || plan === "visits" || plan === "detail" || plan === "visits+detail" ? [] : ["resolve-ambiguous-lead"],
         constraints: { readOnly: true, maxResults: 10 },
       },
     });
@@ -303,7 +383,7 @@ export class CrmSearchLeadsVerticalSlice {
       runId: executionRunId, conversationId: input.conversationId, kind: "execution", profileId: "crm",
       profileVersion: dispatch.profile.version, objectiveHash: dispatch.objectiveHash, objectiveRedacted: redactObjective(message),
       parentRunId: interactionRunId, dependencyRunIds: [], registryHash: dispatch.toolResolution.registryHash,
-      skillVersions, toolScope, requestedModel: plan === "context" || plan === "visits" ? undefined : this.config.model, visibility: "user",
+      skillVersions, toolScope, requestedModel: ["context", "visits", "detail", "visits+detail"].includes(plan) ? undefined : this.config.model, visibility: "user",
     });
 
     if (dispatch.toolResolution.tools.length !== allowedToolIds.length) {
@@ -313,14 +393,14 @@ export class CrmSearchLeadsVerticalSlice {
       };
       await this.repository.updateRun(actor, executionRunId, { status: "failed", errorCode: "PERMISSION_DENIED", resultSummary: result.summary, completedAt: Date.now() }, "queued");
       await event("execution.permission_denied", { rejected: dispatch.toolResolution.rejected });
-      await this.persistAssistant(actor, input.conversationId, messageSequence, executionRunId, result);
+      await this.persistAssistant(actor, input.conversationId, messageSequence, executionRunId, result, conversationContext);
       return { conversationId: input.conversationId, interactionRunId, executionRunId, result };
     }
 
     await this.repository.createAttempt(actor, { attemptId, runId: executionRunId, attemptNumber: 1, status: "queued", fencingToken: 0 });
     await this.repository.updateAttempt(actor, { attemptId, expectedStatus: "queued", patch: { status: "running", startedAt: Date.now() } });
     await this.repository.updateRun(actor, executionRunId, { status: "running" }, "queued");
-    await event("execution.started", { plan, profile: "crm", profileVersion: dispatch.profile.version, requestedModel: plan === "context" || plan === "visits" ? undefined : this.config.model });
+    await event("execution.started", { plan, profile: "crm", profileVersion: dispatch.profile.version, requestedModel: ["context", "visits", "detail", "visits+detail"].includes(plan) ? undefined : this.config.model });
 
     const runtimeTools = toolRegistry.compileRuntimeTools({
       resolved: dispatch.toolResolution, actor, policy: new DefaultPolicyEngine(), profileId: "crm",
@@ -329,7 +409,7 @@ export class CrmSearchLeadsVerticalSlice {
 
     let runtime: OpenRouterRuntimeResult | undefined;
     try {
-      if (plan !== "context" && plan !== "visits") {
+      if (plan.startsWith("search")) {
         await event("tool.requested", { toolId: CRM_SEARCH_LEADS_TOOL_ID, version: 1 });
         await event("model.started", { requestedModel: this.config.model, provider: "openrouter", inference: 1 });
         runtime = await this.runtime.run({
@@ -366,21 +446,27 @@ export class CrmSearchLeadsVerticalSlice {
         await event("model.completed", { inference: 1, requestedModel: runtime.requestedModel, resolvedModel: runtime.resolvedModel, provider: runtime.provider, finishReason: runtime.finishReason, usage: runtime.detailedUsage, latencyMs: runtime.latencyMs });
       }
 
-      const contextRef = contextualRef ?? (searchOutput?.total === 1 && searchOutput.matches.length === 1 ? searchOutput.matches[0]?.ref : undefined);
-      if ((plan === "context" || plan === "search+context") && contextRef) {
+      const leadRef = conversationContext.selected.lead
+        ?? (searchOutput?.total === 1 && searchOutput.matches.length === 1 ? searchOutput.matches[0]?.ref : undefined);
+      if (leadRef) conversationContext = {
+        selected: { ...conversationContext.selected, lead: leadRef },
+        referenced: conversationContext.referenced,
+      };
+      if ((plan === "context" || plan === "search+context") && leadRef) {
         const contextTool = runtimeTools.find((tool) => tool.name === "get_lead_context");
         if (!contextTool) throw new OpenRouterRuntimeError("Context tool is outside the effective scope", "POLICY_DENIED", false);
-        await event("tool.requested", { toolId: CRM_GET_LEAD_CONTEXT_TOOL_ID, version: 1, inputRef: contextRef });
-        await event("tool.started", { toolName: "get_lead_context", inputRef: contextRef });
-        const toolResult = await contextTool.handle({ lead: contextRef });
+        await event("tool.requested", { toolId: CRM_GET_LEAD_CONTEXT_TOOL_ID, version: 1, inputRef: leadRef });
+        await event("tool.started", { toolName: "get_lead_context", inputRef: leadRef });
+        const toolResult = await contextTool.handle({ lead: leadRef });
         if (toolResult.success === false || !contextOutput) throw new OpenRouterRuntimeError("Context tool failed", "INVALID_TOOL_CALL", false);
         await event("tool.completed", { toolName: "get_lead_context", services: contextOutput.telemetry?.services, latencyMs: contextOutput.telemetry?.latencyMs });
       }
 
-      if ((plan === "visits" || plan === "search+visits") && contextRef) {
+      if (["visits", "search+visits", "visits+detail", "search+visits+detail"].includes(plan) && leadRef) {
         const visitsTool = runtimeTools.find((tool) => tool.name === "list_lead_visits");
         if (!visitsTool) throw new OpenRouterRuntimeError("Lead visits tool is outside the effective scope", "POLICY_DENIED", false);
-        const filters = visitsFilters(message, contextRef);
+        const filters = visitsFilters(message, leadRef);
+        if (plan === "visits+detail" || plan === "search+visits+detail") filters.scope = "upcoming";
         await event("tool.requested", { toolId: VISITS_LIST_LEAD_VISITS_TOOL_ID, version: 1, input: filters });
         await event("tool.started", { toolName: "list_lead_visits", input: filters });
         const toolResult = await visitsTool.handle(filters);
@@ -393,7 +479,40 @@ export class CrmSearchLeadsVerticalSlice {
         });
       }
 
-      const result: ExecutionResult<CrmLeadReadData> = visitsOutput
+      let detailRef = conversationContext.selected.visit;
+      if ((plan === "visits+detail" || plan === "search+visits+detail") && visitsOutput) {
+        detailRef = visitsOutput.visits[0]?.ref;
+        if (!detailRef) throw new OpenRouterRuntimeError("No upcoming visit is available to detail", "NOT_FOUND", false);
+        conversationContext = withSelectedRef(conversationContext, detailRef);
+      }
+      if ((plan === "detail" || plan === "visits+detail" || plan === "search+visits+detail") && detailRef) {
+        const detailTool = runtimeTools.find((tool) => tool.name === "get_visit");
+        if (!detailTool) throw new OpenRouterRuntimeError("Visit detail tool is outside the effective scope", "POLICY_DENIED", false);
+        await event("tool.requested", { toolId: VISITS_GET_VISIT_TOOL_ID, version: 1, input: { visit: detailRef } });
+        await event("tool.started", { toolName: "get_visit", input: { visit: detailRef } });
+        const toolResult = await detailTool.handle({ visit: detailRef });
+        if (toolResult.success === false || !visitDetailOutput) throw new OpenRouterRuntimeError("Visit detail tool failed", "INVALID_TOOL_CALL", false);
+        await event("tool.completed", {
+          toolName: "get_visit", services: visitDetailOutput.telemetry?.services,
+          latencyMs: visitDetailOutput.telemetry?.latencyMs,
+          attributionLatencyMs: visitDetailOutput.telemetry?.attributionLatencyMs,
+          detailServiceLatencyMs: visitDetailOutput.telemetry?.detailServiceLatencyMs,
+          entityRefs: [visitDetailOutput.ref, visitDetailOutput.lead?.ref, visitDetailOutput.property?.ref].filter(Boolean),
+          kind: visitDetailOutput.kind,
+          result: visitDetailOutput,
+        });
+        conversationContext = {
+          selected: {
+            lead: conversationContext.selected.lead ?? visitDetailOutput.lead?.ref,
+            visit: detailRef,
+          },
+          referenced: conversationContext.referenced,
+        };
+      }
+
+      const result: ExecutionResult<CrmLeadReadData> = visitDetailOutput
+        ? { ...toVisitDetailExecutionResult(visitDetailOutput), data: { search: searchOutput, visits: visitsOutput, visitDetail: visitDetailOutput } }
+        : visitsOutput
         ? { ...toLeadVisitsExecutionResult(visitsOutput), data: { search: searchOutput, visits: visitsOutput } }
         : contextOutput
         ? { ...toCrmLeadContextExecutionResult(contextOutput), data: { search: searchOutput, context: contextOutput } }
@@ -410,8 +529,11 @@ export class CrmSearchLeadsVerticalSlice {
         searchLatencyMs: searchOutput?.telemetry?.latencyMs, contextLatencyMs: contextOutput?.telemetry?.latencyMs,
         visitsLatencyMs: visitsOutput?.telemetry?.latencyMs,
         visitServiceLatencyMs: visitsOutput?.telemetry?.visitServiceLatencyMs,
+        visitDetailLatencyMs: visitDetailOutput?.telemetry?.latencyMs,
+        attributionLatencyMs: visitDetailOutput?.telemetry?.attributionLatencyMs,
+        detailServiceLatencyMs: visitDetailOutput?.telemetry?.detailServiceLatencyMs,
       });
-      await this.persistAssistant(actor, input.conversationId, messageSequence, executionRunId, result, contextRef);
+      await this.persistAssistant(actor, input.conversationId, messageSequence, executionRunId, result, conversationContext);
       return { conversationId: input.conversationId, interactionRunId, executionRunId, result, runtime };
     } catch (error) {
       const result = normalizedFailure(error);
@@ -419,7 +541,7 @@ export class CrmSearchLeadsVerticalSlice {
       await this.repository.updateAttempt(actor, { attemptId, expectedStatus: "running", patch: { status: errorCode === "TIMEOUT" ? "timeout" : "failed", completedAt: Date.now(), errorCode } });
       await this.repository.updateRun(actor, executionRunId, { status: errorCode === "TIMEOUT" ? "timeout" : "failed", errorCode, resultSummary: result.summary, completedAt: Date.now() }, "running");
       await event("execution.failed", { errorCode, retryable: result.errors[0]?.retryable ?? false });
-      await this.persistAssistant(actor, input.conversationId, messageSequence, executionRunId, result);
+      await this.persistAssistant(actor, input.conversationId, messageSequence, executionRunId, result, conversationContext);
       return { conversationId: input.conversationId, interactionRunId, executionRunId, result };
     }
   }
@@ -430,11 +552,12 @@ export class CrmSearchLeadsVerticalSlice {
     sequence: number,
     runId: string | undefined,
     result: ExecutionResult<CrmLeadReadData>,
-    leadContextRef?: EntityRef,
+    context: ConversationContextRefs,
   ) {
+    const referenced = [...new Map(result.entities.map((ref) => [`${ref.type}:${ref.id}`, ref])).values()];
     await this.repository.appendMessage(actor, {
       messageId: randomUUID(), conversationId, role: "assistant", contentRedacted: result.summary,
-      blocks: result.blocks, contextRefs: leadContextRef ? [leadContextRef] : result.entities.length === 1 && result.entities[0]?.type === "crm.lead" ? result.entities : undefined,
+      blocks: result.blocks, contextRefs: { selected: context.selected, referenced },
       runId, sequence, createdAt: Date.now(),
     });
   }

@@ -22,12 +22,39 @@ import {
   listLeadVisitsInputSchema,
   type LeadVisitsPort,
 } from "../server/hostmate/product-tools/visits/list-lead-visits.js";
+import {
+  createGetVisitTool,
+  getVisitInputSchema,
+  VisitDetailPortError,
+  type VisitDetailPort,
+} from "../server/hostmate/product-tools/visits/get-visit.js";
 import { OpenRouterAdapter } from "../server/hostmate/runtime/openrouter-adapter.js";
 import { ProductToolRegistry } from "../server/hostmate/tools/registry.js";
 import { CrmSearchLeadsVerticalSlice } from "../server/hostmate/vertical-slices/crm-search-leads.js";
 
-function actor(tenantId = "7", permissions: string[] = ["crm.read"]) {
+function actor(tenantId = "7", permissions: string[] = ["crm.read", "visits.read"]) {
   return createActorContext({ tenantId, userId: "10", role: "agent", isSuperAdmin: false, permissions, locale: "es-ES", timezone: "Europe/Madrid", sessionId: "s-10", permissionsVersion: "v1" });
+}
+
+function visitDetailPort(overrides?: Partial<VisitDetailPort>): VisitDetailPort {
+  return {
+    getVisit: async (_actor, input) => ({
+      kind: input.visit.type === "visits.group_visit" ? "group" : "individual",
+      id: input.visit.id,
+      at: "2099-08-20T10:00:00.000Z",
+      status: input.visit.type === "visits.group_visit" ? "active" : "confirmed",
+      visitType: "presencial",
+      durationMinutes: 45,
+      property: { id: "55", title: "Ático Centro", reference: "REF-55", address: "Calle Mayor 1" },
+      lead: { id: "123", name: "Juan García" },
+      assignedAgent: { id: "10", name: "Ana" },
+      ...(input.visit.type === "visits.group_visit"
+        ? { registration: { status: "confirmed", capacity: 10, registeredCount: 4, availableCapacity: 6 } }
+        : { clientConfirmation: "confirmed", state: { isGroupSlot: false }, lastReschedule: null }),
+      telemetry: { services: ["visit.service.getById"], latencyMs: 14 },
+    }),
+    ...overrides,
+  } as VisitDetailPort;
 }
 
 function output(count: number) {
@@ -203,6 +230,56 @@ describe("visits.list_lead_visits.v1 contract", () => {
   });
 });
 
+describe("visits.get_visit.v1 contract", () => {
+  it("accepts exactly one visit EntityRef and rejects search, authority and lead injection", () => {
+    expect(getVisitInputSchema.parse({ visit: { type: "visits.visit", id: "91" } })).toEqual({ visit: { type: "visits.visit", id: "91" } });
+    expect(getVisitInputSchema.parse({ visit: { type: "visits.group_visit", id: "7" } })).toEqual({ visit: { type: "visits.group_visit", id: "7" } });
+    for (const malicious of [
+      { query: "visita de Juan" }, { visitId: 91 }, { lead: { type: "crm.lead", id: "123" } },
+      { visit: { type: "crm.lead", id: "91" } }, { visit: { type: "visits.visit", id: "0" } },
+      { visit: { type: "visits.visit", id: "91", tenantId: "9" } },
+      { visit: { type: "visits.visit", id: "91" }, tenant_id: 9 },
+    ]) expect(getVisitInputSchema.safeParse(malicious).success).toBe(false);
+  });
+
+  it("sanitizes an individual detail into bounded visit, lead and canonical property refs", async () => {
+    const port = visitDetailPort({ getVisit: vi.fn(async (_actor, input) => ({
+      ...(await visitDetailPort().getVisit(_actor, input) as any),
+      token: "never", google_event_id: "never", notes: "secret", tenant_id: 9, dynamic_answers: { secret: true },
+    })) });
+    const result = await createGetVisitTool({ port }).handler({ visit: { type: "visits.visit", id: "91", label: "Visita" } }, actor()) as any;
+    expect(port.getVisit).toHaveBeenCalledWith(expect.objectContaining({ tenantId: "7", userId: "10" }), { visit: expect.objectContaining({ type: "visits.visit", id: "91" }) });
+    expect(result).toMatchObject({
+      kind: "individual", status: "confirmed", timezone: "Europe/Madrid",
+      ref: { type: "visits.visit", id: "91", deepLink: "/visits?visitId=91" },
+      lead: { ref: { type: "crm.lead", id: "123" } },
+      property: { ref: { type: "property.property", id: "55" } },
+    });
+    expect(JSON.stringify(result)).not.toMatch(/token|google_event|notes|secret|tenant_id|dynamic_answers/);
+  });
+
+  it("returns a discriminated bounded group detail", async () => {
+    const result = await createGetVisitTool({ port: visitDetailPort() }).handler({ visit: { type: "visits.group_visit", id: "7" } }, actor()) as any;
+    expect(result).toMatchObject({
+      kind: "group", status: "active", ref: { type: "visits.group_visit", id: "7", deepLink: "/visits" },
+      registration: { status: "confirmed", capacity: 10, registeredCount: 4, availableCapacity: 6 },
+    });
+    expect(result).not.toHaveProperty("lastReschedule");
+  });
+
+  it("requires visits.read and preserves typed current-authorization failures", async () => {
+    const tool = createGetVisitTool({ port: visitDetailPort({ getVisit: async () => { throw new VisitDetailPortError("PERMISSION_DENIED", "reassigned"); } }) });
+    const registry = new ProductToolRegistry([tool]);
+    for (const profileId of ["crm", "visits"] as const) {
+      expect(registry.resolve({ profileId, objectiveCapabilities: ["visits.visit.detail"], actor: actor(), featureEnabled: () => true, readOnly: true }).tools)
+        .toHaveLength(1);
+    }
+    expect(registry.resolve({ profileId: "crm", objectiveCapabilities: ["visits.visit.detail"], actor: actor("7", ["crm.read"]), featureEnabled: () => true, readOnly: true }).rejected)
+      .toEqual([{ toolId: "visits.get_visit.v1", reason: "missing_permission" }]);
+    await expect(tool.handler({ visit: { type: "visits.visit", id: "91" } }, actor())).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+  });
+});
+
 function sse(event: unknown): Response {
   return new Response(`data: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n`, { status: 200, headers: { "content-type": "text/event-stream" } });
 }
@@ -235,7 +312,7 @@ describe("crm.search_leads vertical slice", () => {
     }));
     const { repository, state } = memoryRepository();
     const port: LeadSearchPort = { search: async (_actor, input) => ({ items: [{ id: 1, client_name: "Juan García" }, { id: 2, client_name: "Juan García López" }], total: 2, page: input.page, limit: input.limit, telemetry: { service: "lead.service.list", latencyMs: 8 } }) };
-    const slice = new CrmSearchLeadsVerticalSlice(repository, port, contextPort(), visitsPort(), new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock, maxTransportRetries: 0 }), { model: "requested/model" });
+    const slice = new CrmSearchLeadsVerticalSlice(repository, port, contextPort(), visitsPort(), visitDetailPort(), new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock, maxTransportRetries: 0 }), { model: "requested/model" });
     const result = await slice.execute(actor(), { conversationId: "123e4567-e89b-42d3-a456-426614174000", message: "Busca a Juan García" });
     expect(result.result.status).toBe("needs_input");
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -256,7 +333,7 @@ describe("crm.search_leads vertical slice", () => {
     const { repository } = memoryRepository();
     const fetchMock = vi.fn();
     const port = { search: vi.fn() } as LeadSearchPort;
-    const slice = new CrmSearchLeadsVerticalSlice(repository, port, contextPort(), visitsPort(), new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock }), { model: "requested/model" });
+    const slice = new CrmSearchLeadsVerticalSlice(repository, port, contextPort(), visitsPort(), visitDetailPort(), new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock }), { model: "requested/model" });
     const result = await slice.execute(actor("7", []), { conversationId: "123e4567-e89b-42d3-a456-426614174001", message: "Busca a Juan" });
     expect(result.result.status).toBe("permission_denied");
     expect(fetchMock).not.toHaveBeenCalled();
@@ -272,7 +349,7 @@ describe("crm.search_leads vertical slice", () => {
     const { repository, state } = memoryRepository();
     const search: LeadSearchPort = { search: async (_actor, input) => ({ items: [{ id: 123, client_name: "Juan García" }], total: 1, page: input.page, limit: input.limit, telemetry: { service: "lead.service.list", latencyMs: 9 } }) };
     const context = contextPort({ getContext: vi.fn(contextPort().getContext) });
-    const slice = new CrmSearchLeadsVerticalSlice(repository, search, context, visitsPort(), new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock, maxTransportRetries: 0 }), { model: "requested/model" });
+    const slice = new CrmSearchLeadsVerticalSlice(repository, search, context, visitsPort(), visitDetailPort(), new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock, maxTransportRetries: 0 }), { model: "requested/model" });
     const turn = await slice.execute(actor(), { conversationId: "123e4567-e89b-42d3-a456-426614174010", message: "Busca a Juan García y dime qué sabemos de él" });
     expect(turn.result).toMatchObject({ status: "completed", data: { search: { total: 1 }, context: { lead: { name: "Juan García" } } } });
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -292,7 +369,7 @@ describe("crm.search_leads vertical slice", () => {
     const { repository, state } = memoryRepository();
     const search: LeadSearchPort = { search: async (_actor, input) => ({ items: [{ id: 123, client_name: "Juan García" }], total: 1, page: input.page, limit: input.limit }) };
     const visits = visitsPort({ listLeadVisits: vi.fn(visitsPort().listLeadVisits) });
-    const slice = new CrmSearchLeadsVerticalSlice(repository, search, contextPort(), visits, new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock, maxTransportRetries: 0 }), { model: "requested/model" });
+    const slice = new CrmSearchLeadsVerticalSlice(repository, search, contextPort(), visits, visitDetailPort(), new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock, maxTransportRetries: 0 }), { model: "requested/model" });
     const turn = await slice.execute(actor(), { conversationId: "123e4567-e89b-42d3-a456-426614174020", message: "¿Qué próximas visitas tiene Juan García?" });
     expect(turn.result).toMatchObject({ status: "completed", data: { search: { total: 1 }, visits: { metadata: { scope: "upcoming" } } } });
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -308,15 +385,85 @@ describe("crm.search_leads vertical slice", () => {
     const fetchMock = vi.fn();
     const search = { search: vi.fn() } as LeadSearchPort;
     const visits = visitsPort({ listLeadVisits: vi.fn(visitsPort().listLeadVisits) });
-    const slice = new CrmSearchLeadsVerticalSlice(repository, search, contextPort(), visits, new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock }), { model: "requested/model" });
+    const slice = new CrmSearchLeadsVerticalSlice(repository, search, contextPort(), visits, visitDetailPort(), new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock }), { model: "requested/model" });
     const lead = { type: "crm.lead", id: "123", label: "Juan García" };
     const turn = await slice.execute(actor(), { conversationId: "123e4567-e89b-42d3-a456-426614174021", message: "¿Cuál es su próxima visita?", selectedEntityRef: lead });
     expect(turn.result).toMatchObject({ status: "completed", data: { visits: { metadata: { scope: "upcoming" } } } });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(search.search).not.toHaveBeenCalled();
     expect(state.usage).toHaveLength(0);
-    expect(state.messages.at(-1)).toMatchObject({ contextRefs: [{ type: "crm.lead", id: "123" }] });
+    expect(state.messages.at(-1)).toMatchObject({ contextRefs: { selected: { lead: { type: "crm.lead", id: "123" } } } });
     expect([...state.runs.values()].find((run) => run.kind === "execution").requestedModel).toBeUndefined();
+  });
+
+  it("uses a selected visit directly with only get_visit, zero search/list and zero model calls", async () => {
+    const { repository, state } = memoryRepository();
+    const fetchMock = vi.fn();
+    const search = { search: vi.fn() } as LeadSearchPort;
+    const visits = visitsPort({ listLeadVisits: vi.fn() });
+    const detail = visitDetailPort({ getVisit: vi.fn(visitDetailPort().getVisit) });
+    const slice = new CrmSearchLeadsVerticalSlice(repository, search, contextPort(), visits, detail, new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock }), { model: "requested/model" });
+    const turn = await slice.execute(actor(), {
+      conversationId: "123e4567-e89b-42d3-a456-426614174025", message: "Cuéntame más sobre esta visita",
+      selectedEntityRef: { type: "visits.visit", id: "91", label: "Ático Centro" },
+    });
+    expect(turn.result).toMatchObject({ status: "completed", data: { visitDetail: { kind: "individual", ref: { id: "91" } } } });
+    expect(detail.getVisit).toHaveBeenCalledWith(expect.anything(), { visit: expect.objectContaining({ id: "91" }) });
+    expect(search.search).not.toHaveBeenCalled();
+    expect(visits.listLeadVisits).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(state.usage).toHaveLength(0);
+    const execution = [...state.runs.values()].find((run) => run.kind === "execution");
+    expect(execution.toolScope).toEqual(["visits.get_visit.v1@1"]);
+    expect(state.messages.at(-1)).toMatchObject({ contextRefs: { selected: { lead: { id: "123" }, visit: { id: "91" } } } });
+  });
+
+  it("resolves a visit ordinal from the latest list and keeps selected lead + selected visit across reconnect", async () => {
+    const { repository, state } = memoryRepository();
+    const fetchMock = vi.fn();
+    const search = { search: vi.fn() } as LeadSearchPort;
+    const visits = visitsPort({ listLeadVisits: vi.fn(async (_actor, input) => ({
+      ...(await visitsPort().listLeadVisits(_actor, input)),
+      visits: [
+        ...(await visitsPort().listLeadVisits(_actor, input)).visits,
+        { ...(await visitsPort().listLeadVisits(_actor, input)).visits[0]!, id: "92", at: "2099-08-21T10:00:00.000Z" },
+      ],
+      metadata: { scope: input.scope, total: 2, returned: 2, hasMore: false, limit: 10 },
+    })) });
+    const detail = visitDetailPort({ getVisit: vi.fn(visitDetailPort().getVisit) });
+    const conversationId = "123e4567-e89b-42d3-a456-426614174026";
+    const firstSlice = new CrmSearchLeadsVerticalSlice(repository, search, contextPort(), visits, detail, new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock }), { model: "requested/model" });
+    await firstSlice.execute(actor(), { conversationId, message: "¿Qué visitas tiene?", selectedEntityRef: { type: "crm.lead", id: "123", label: "Juan" } });
+    const reconnectedSlice = new CrmSearchLeadsVerticalSlice(repository, search, contextPort(), visits, detail, new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock }), { model: "requested/model" });
+    const selected = await reconnectedSlice.execute(actor(), { conversationId, message: "La segunda" });
+    const followUp = await reconnectedSlice.execute(actor(), { conversationId, message: "Cuéntame más" });
+    expect(selected.result).toMatchObject({ data: { visitDetail: { ref: { id: "92" } } } });
+    expect(followUp.result).toMatchObject({ data: { visitDetail: { ref: { id: "92" } } } });
+    expect(detail.getVisit).toHaveBeenNthCalledWith(1, expect.anything(), { visit: expect.objectContaining({ id: "92" }) });
+    expect(detail.getVisit).toHaveBeenNthCalledWith(2, expect.anything(), { visit: expect.objectContaining({ id: "92" }) });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(state.messages.at(-1)).toMatchObject({ contextRefs: { selected: { lead: { id: "123" }, visit: { id: "92" } } } });
+  });
+
+  it("composes search → upcoming visits → first visit detail in one CRM run and one inference", async () => {
+    const fetchMock = vi.fn(async () => sse({
+      model: "provider/resolved", provider: "Provider A",
+      choices: [{ delta: { tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: "crm__search_leads_0", arguments: '{"query":"Juan García"}' } }] }, finish_reason: "tool_calls" }],
+      usage: { prompt_tokens: 44, completion_tokens: 7, cost: 0.001 },
+    }));
+    const { repository, state } = memoryRepository();
+    const search: LeadSearchPort = { search: async (_actor, input) => ({ items: [{ id: 123, client_name: "Juan García" }], total: 1, page: input.page, limit: input.limit }) };
+    const visits = visitsPort({ listLeadVisits: vi.fn(visitsPort().listLeadVisits) });
+    const detail = visitDetailPort({ getVisit: vi.fn(visitDetailPort().getVisit) });
+    const slice = new CrmSearchLeadsVerticalSlice(repository, search, contextPort(), visits, detail, new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock, maxTransportRetries: 0 }), { model: "requested/model" });
+    const turn = await slice.execute(actor(), { conversationId: "123e4567-e89b-42d3-a456-426614174027", message: "Busca a Juan García, dime su próxima visita y cuéntame más" });
+    expect(turn.result).toMatchObject({ data: { search: { total: 1 }, visits: { metadata: { scope: "upcoming" } }, visitDetail: { ref: { id: "91" } } } });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(visits.listLeadVisits).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ scope: "upcoming", lead: expect.objectContaining({ id: "123" }) }));
+    expect(detail.getVisit).toHaveBeenCalledWith(expect.anything(), { visit: expect.objectContaining({ id: "91" }) });
+    const execution = [...state.runs.values()].find((run) => run.kind === "execution");
+    expect(execution.toolScope).toEqual(["crm.search_leads.v1@1", "visits.list_lead_visits.v1@1", "visits.get_visit.v1@1"]);
+    expect(state.usage).toHaveLength(1);
   });
 
   it("returns zero visits clearly without adding a model inference", async () => {
@@ -326,7 +473,7 @@ describe("crm.search_leads vertical slice", () => {
       metadata: { scope: input.scope, status: input.status, total: 0, returned: 0, hasMore: false, limit: 10 },
     }) });
     const fetchMock = vi.fn();
-    const slice = new CrmSearchLeadsVerticalSlice(repository, { search: vi.fn() } as LeadSearchPort, contextPort(), zeroVisits, new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock }), { model: "requested/model" });
+    const slice = new CrmSearchLeadsVerticalSlice(repository, { search: vi.fn() } as LeadSearchPort, contextPort(), zeroVisits, visitDetailPort(), new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock }), { model: "requested/model" });
     const turn = await slice.execute(actor(), { conversationId: "123e4567-e89b-42d3-a456-426614174022", message: "¿Qué visitas tiene?", selectedEntityRef: { type: "crm.lead", id: "123", label: "Juan" } });
     expect(turn.result).toMatchObject({ status: "completed", entities: [], data: { visits: { visits: [] } } });
     expect(turn.result.summary).toContain("no tiene visitas");
@@ -339,7 +486,7 @@ describe("crm.search_leads vertical slice", () => {
     const fetchMock = vi.fn();
     const search = { search: vi.fn() } as LeadSearchPort;
     const visits = visitsPort({ listLeadVisits: vi.fn() });
-    const slice = new CrmSearchLeadsVerticalSlice(repository, search, contextPort(), visits, new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock }), { model: "requested/model" });
+    const slice = new CrmSearchLeadsVerticalSlice(repository, search, contextPort(), visits, visitDetailPort(), new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock }), { model: "requested/model" });
     const turn = await slice.execute(actor(), { conversationId: "123e4567-e89b-42d3-a456-426614174024", message: "¿Tiene alguna visita programada?" });
     expect(turn.result).toMatchObject({ status: "needs_input", entities: [] });
     expect(fetchMock).not.toHaveBeenCalled();
@@ -354,7 +501,7 @@ describe("crm.search_leads vertical slice", () => {
     const { repository } = memoryRepository();
     const search: LeadSearchPort = { search: async (_actor, input) => ({ items: [{ id: 1, client_name: "Juan A" }, { id: 2, client_name: "Juan B" }], total: 2, page: input.page, limit: input.limit }) };
     const visits = visitsPort({ listLeadVisits: vi.fn() });
-    const slice = new CrmSearchLeadsVerticalSlice(repository, search, contextPort(), visits, new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock, maxTransportRetries: 0 }), { model: "requested/model" });
+    const slice = new CrmSearchLeadsVerticalSlice(repository, search, contextPort(), visits, visitDetailPort(), new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock, maxTransportRetries: 0 }), { model: "requested/model" });
     const turn = await slice.execute(actor(), { conversationId: "123e4567-e89b-42d3-a456-426614174023", message: "Busca a Juan y dime qué visitas tiene" });
     expect(turn.result.status).toBe("needs_input");
     expect(visits.listLeadVisits).not.toHaveBeenCalled();
@@ -367,7 +514,7 @@ describe("crm.search_leads vertical slice", () => {
     const { repository } = memoryRepository();
     const search: LeadSearchPort = { search: async (_actor, input) => ({ items: [{ id: 1, client_name: "Juan A" }, { id: 2, client_name: "Juan B" }, { id: 3, client_name: "Juan C" }], total: 3, page: input.page, limit: input.limit }) };
     const context = contextPort({ getContext: vi.fn() });
-    const slice = new CrmSearchLeadsVerticalSlice(repository, search, context, visitsPort(), new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock, maxTransportRetries: 0 }), { model: "requested/model" });
+    const slice = new CrmSearchLeadsVerticalSlice(repository, search, context, visitsPort(), visitDetailPort(), new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock, maxTransportRetries: 0 }), { model: "requested/model" });
     const turn = await slice.execute(actor(), { conversationId: "123e4567-e89b-42d3-a456-426614174011", message: "Busca a Juan y dime qué sabemos de él" });
     expect(turn.result.status).toBe("needs_input");
     expect(turn.result.entities).toHaveLength(3);
@@ -381,7 +528,7 @@ describe("crm.search_leads vertical slice", () => {
     const { repository } = memoryRepository();
     const search: LeadSearchPort = { search: async (_actor, input) => ({ items: [], total: 0, page: input.page, limit: input.limit }) };
     const context = contextPort({ getContext: vi.fn() });
-    const slice = new CrmSearchLeadsVerticalSlice(repository, search, context, visitsPort(), new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock, maxTransportRetries: 0 }), { model: "requested/model" });
+    const slice = new CrmSearchLeadsVerticalSlice(repository, search, context, visitsPort(), visitDetailPort(), new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock, maxTransportRetries: 0 }), { model: "requested/model" });
     const turn = await slice.execute(actor(), { conversationId: "123e4567-e89b-42d3-a456-426614174014", message: "Busca a Nadie y dime qué sabemos de él" });
     expect(turn.result).toMatchObject({ status: "completed", entities: [], data: { search: { total: 0 } } });
     expect(context.getContext).not.toHaveBeenCalled();
@@ -395,7 +542,7 @@ describe("crm.search_leads vertical slice", () => {
     const search = { search: vi.fn(async (_actor, input) => ({ items: [{ id: 1, client_name: "Juan A" }, { id: 2, client_name: "Juan B" }], total: 2, page: input.page, limit: input.limit })) } as LeadSearchPort;
     const context = contextPort({ getContext: vi.fn(contextPort().getContext) });
     const visits = visitsPort({ listLeadVisits: vi.fn(visitsPort().listLeadVisits) });
-    const slice = new CrmSearchLeadsVerticalSlice(repository, search, context, visits, new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock, maxTransportRetries: 0 }), { model: "requested/model" });
+    const slice = new CrmSearchLeadsVerticalSlice(repository, search, context, visits, visitDetailPort(), new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock, maxTransportRetries: 0 }), { model: "requested/model" });
     const conversationId = "123e4567-e89b-42d3-a456-426614174012";
     await slice.execute(actor(), { conversationId, message: "Busca a Juan" });
     const selected = await slice.execute(actor(), { conversationId, message: "El segundo" });
@@ -409,7 +556,7 @@ describe("crm.search_leads vertical slice", () => {
     expect(context.getContext).toHaveBeenCalledTimes(2);
     expect(visits.listLeadVisits).toHaveBeenCalledTimes(1);
     expect(visits.listLeadVisits).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ lead: expect.objectContaining({ id: "2" }) }));
-    expect(state.messages.find((item) => item.role === "user" && item.contentRedacted === "El segundo")).toMatchObject({ contextRefs: [{ id: "2" }] });
+    expect(state.messages.find((item) => item.role === "user" && item.contentRedacted === "El segundo")).toMatchObject({ contextRefs: { selected: { lead: { id: "2" } } } });
   });
 
   it("reuses the selected EntityRef for a pronoun follow-up and revalidates reassignment", async () => {
@@ -417,7 +564,7 @@ describe("crm.search_leads vertical slice", () => {
     const fetchMock = vi.fn();
     const search = { search: vi.fn() } as LeadSearchPort;
     const context = contextPort({ getContext: vi.fn(async () => { throw new LeadContextPortError("PERMISSION_DENIED", "lead reassigned"); }) });
-    const slice = new CrmSearchLeadsVerticalSlice(repository, search, context, visitsPort(), new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock }), { model: "requested/model" });
+    const slice = new CrmSearchLeadsVerticalSlice(repository, search, context, visitsPort(), visitDetailPort(), new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock }), { model: "requested/model" });
     const conversationId = "123e4567-e89b-42d3-a456-426614174013";
     const first = await slice.execute(actor(), { conversationId, message: "¿Qué sabemos de Juan?", selectedEntityRef: { type: "crm.lead", id: "123", label: "Juan" } });
     expect(first.result).toMatchObject({ status: "permission_denied", errors: [{ code: "PERMISSION_DENIED" }] });

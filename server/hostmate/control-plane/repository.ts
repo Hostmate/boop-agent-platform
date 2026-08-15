@@ -20,6 +20,14 @@ export type ConversationRecord = Readonly<{
   updatedAt: number;
 }>;
 
+export type ConversationContextRefs = Readonly<{
+  selected: Readonly<{
+    lead?: EntityRef;
+    visit?: EntityRef;
+  }>;
+  referenced: readonly EntityRef[];
+}>;
+
 export type AgentMessageRecord = Readonly<{
   messageId: string;
   conversationId: string;
@@ -28,7 +36,7 @@ export type AgentMessageRecord = Readonly<{
   role: "user" | "assistant" | "system";
   contentRedacted: string;
   blocks?: readonly AgentContentBlock[];
-  contextRefs?: readonly EntityRef[];
+  contextRefs?: ConversationContextRefs;
   runId?: string;
   sequence: number;
   createdAt: number;

@@ -7,13 +7,14 @@ import { AuthenticatedConvexHttpClient } from "../control-plane/convex-http-clie
 import { HostmateHttpLeadSearchPort } from "../product-tools/crm/hostmate-http-lead-search-port.js";
 import { HostmateHttpLeadContextPort } from "../product-tools/crm/hostmate-http-lead-context-port.js";
 import { HostmateHttpLeadVisitsPort } from "../product-tools/visits/hostmate-http-lead-visits-port.js";
+import { HostmateHttpVisitDetailPort } from "../product-tools/visits/hostmate-http-visit-detail-port.js";
 import { OpenRouterAdapter } from "../runtime/openrouter-adapter.js";
 import { CrmSearchLeadsVerticalSlice } from "../vertical-slices/crm-search-leads.js";
 
 const requestSchema = z.object({
   conversationId: z.string().uuid(),
   message: z.string().trim().min(1).max(500),
-  selectedEntityRef: entityRefSchema.extend({ type: z.literal("crm.lead") }).strict().optional(),
+  selectedEntityRef: entityRefSchema.extend({ type: z.enum(["crm.lead", "visits.visit", "visits.group_visit"]) }).strict().optional(),
 }).strict();
 
 export type AgentPlatformRuntimeConfig = Readonly<{
@@ -28,7 +29,7 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
   const app = express();
   app.disable("x-powered-by");
   app.use(express.json({ limit: "16kb" }));
-  app.get("/health", (_req, res) => res.json({ ok: true, capabilities: ["crm.search_leads.v1", "crm.get_lead_context.v1", "visits.list_lead_visits.v1"] }));
+  app.get("/health", (_req, res) => res.json({ ok: true, capabilities: ["crm.search_leads.v1", "crm.get_lead_context.v1", "visits.list_lead_visits.v1", "visits.get_visit.v1"] }));
   app.post("/v1/turn", async (req, res) => {
     const authorization = req.headers.authorization;
     if (!authorization?.startsWith("Bearer ")) return res.status(401).json({ success: false, error: "UNAUTHENTICATED" });
@@ -46,6 +47,7 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
         new HostmateHttpLeadSearchPort(config.hostmateApiBaseUrl, token),
         new HostmateHttpLeadContextPort(config.hostmateApiBaseUrl, token),
         new HostmateHttpLeadVisitsPort(config.hostmateApiBaseUrl, token),
+        new HostmateHttpVisitDetailPort(config.hostmateApiBaseUrl, token),
         new OpenRouterAdapter({ apiKey: config.openRouterApiKey, appName: "Hostmate Agent Platform" }),
         { model: config.model, fallbackModels: config.fallbackModels },
       );

@@ -80,7 +80,7 @@ One CRM Execution Run is used for the concrete task. A composed objective receiv
 
 ## 8. Conversational context
 
-Selected refs are persisted as `contextRefs` on Agent Platform conversation messages, not in Memory. “El segundo” resolves against the latest durable `entity_list`; a later “¿Qué sabemos de él?” reuses the selected ref. Explicit card selection sends the EntityRef with the turn. Every follow-up still calls context and reauthorizes.
+Selected refs are persisted as semantic `contextRefs` (`selected.lead`, optional `selected.visit`, and `referenced`) on Agent Platform conversation messages, not in Memory. “El segundo” resolves against the latest durable `entity_list`; a later “¿Qué sabemos de él?” reuses the selected lead. Explicit card selection sends the EntityRef with the turn. Every follow-up still calls context and reauthorizes. Legacy array-shaped messages remain readable.
 
 ## 9. Ambiguity
 
@@ -141,4 +141,4 @@ Add managed runtime deployment, key rotation, retention, deployed browser smoke 
 
 ## 18. Recomendación para la siguiente capability
 
-The proposed lead-visits capability has been implemented canonically as `visits.list_lead_visits.v1`, owned by Visits and importable by CRM. The next recommendation is `visits.get_visit.v1`, read-only and EntityRef-based, before any visit write capability.
+The proposed lead-visits capability has been implemented canonically as `visits.list_lead_visits.v1`, owned by Visits and importable by CRM. Its proposed successor is now implemented as `visits.get_visit.v1`; see `VISITS_GET_VISIT_VERTICAL_SLICE.md`.

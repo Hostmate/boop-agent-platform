@@ -8,6 +8,7 @@ import { AuthenticatedConvexHttpClient } from "../server/hostmate/control-plane/
 import type { LeadContextPort } from "../server/hostmate/product-tools/crm/get-lead-context.js";
 import type { CrmSearchLeadsInput, LeadSearchPort } from "../server/hostmate/product-tools/crm/search-leads.js";
 import type { LeadVisitsPort } from "../server/hostmate/product-tools/visits/list-lead-visits.js";
+import type { VisitDetailPort } from "../server/hostmate/product-tools/visits/get-visit.js";
 import { OpenRouterAdapter } from "../server/hostmate/runtime/openrouter-adapter.js";
 import { CrmSearchLeadsVerticalSlice } from "../server/hostmate/vertical-slices/crm-search-leads.js";
 
@@ -65,7 +66,7 @@ async function main() {
     const header = encode({ alg: "RS256", typ: "JWT", kid });
     const payload = encode({
       iss: issuer, aud: audience, sub: String(userId), iat: nowSeconds, exp: nowSeconds + 300,
-      tenant_id: String(tenantId), user_id: String(userId), role: "admin", permissions: ["crm.read"],
+      tenant_id: String(tenantId), user_id: String(userId), role: "admin", permissions: ["crm.read", "visits.read"],
       locale: "es-ES", timezone: "Europe/Madrid", session_id: `e2e-${randomUUID()}`,
       permissions_version: "e2e-v1", effective_tenant_override: false,
     });
@@ -94,7 +95,7 @@ async function main() {
       }
       if (targetHasVisits) break;
     }
-    if (!target || !targetQuery) throw new Error(`Tenant ${tenantId} has no uniquely searchable real lead for composed E2E`);
+    if (!target || !targetQuery || !targetHasVisits) throw new Error(`Tenant ${tenantId} has no uniquely searchable real lead with visits for composed E2E`);
 
     let executedInput: CrmSearchLeadsInput | undefined;
     let searchCallCount = 0;
@@ -131,13 +132,25 @@ async function main() {
         return { ...result, telemetry: { ...result.telemetry, latencyMs: Math.round((performance.now() - serviceStarted) * 100) / 100 } };
       },
     };
+    const directVisitDetailPort: VisitDetailPort = {
+      getVisit: async (seenActor, input) => {
+        const serviceStarted = performance.now();
+        const servicePath = "../../Plataforma-Real-Estate-boop-spike/v2/apps/api/src/services/agent-platform-visit-detail.service.ts";
+        const service = await import(servicePath) as { getVisitDetail: (actor: { tenantId: number; userId: number; role: "agent" | "admin" | "superadmin" }, visit: { id: number; kind: "individual" | "group" }) => Promise<any> };
+        const result = await service.getVisitDetail(
+          { tenantId: Number(seenActor.tenantId), userId: Number(seenActor.userId), role: seenActor.role },
+          { id: Number(input.visit.id), kind: input.visit.type === "visits.group_visit" ? "group" : "individual" },
+        );
+        return { ...result, telemetry: { ...result.telemetry, latencyMs: Math.round((performance.now() - serviceStarted) * 100) / 100 } };
+      },
+    };
 
     const client = new AuthenticatedConvexHttpClient(convexUrl, token);
     const trusted = await client.currentActor();
     const actor = createActorContext({ ...trusted, isSuperAdmin: false });
     const repository = new ConvexControlPlaneRepository(client);
     const slice = new CrmSearchLeadsVerticalSlice(
-      repository, directPort, directContextPort, directVisitsPort,
+      repository, directPort, directContextPort, directVisitsPort, directVisitDetailPort,
       new OpenRouterAdapter({ apiKey: required("OPENROUTER_API_KEY"), appName: "Hostmate CRM Search Leads E2E" }),
       { model, timeoutMs: 45_000, maxCostUsd: 0.05 },
     );
@@ -161,12 +174,12 @@ async function main() {
     const searchData = turn.result.data?.search;
     const visitsData = turn.result.data?.visits;
     const durableAssistant = messages.find((message) => message.role === "assistant");
-    const durableContextOk = durableAssistant?.contextRefs?.[0]?.id === String(target.id)
+    const durableContextOk = durableAssistant?.contextRefs?.selected.lead?.id === String(target.id)
       && (visitsData?.visits.length === 0 || durableAssistant?.blocks?.[0]?.items[0]?.ref.id === visitsData?.visits[0]?.ref.id);
 
     // Reconstruct the slice after reconnect and rely only on durable contextRefs.
     const reconnectedSlice = new CrmSearchLeadsVerticalSlice(
-      reconnectedRepository, directPort, directContextPort, directVisitsPort,
+      reconnectedRepository, directPort, directContextPort, directVisitsPort, directVisitDetailPort,
       new OpenRouterAdapter({ apiKey: required("OPENROUTER_API_KEY"), appName: "Hostmate CRM Lead Visits Reconnect E2E" }),
       { model, timeoutMs: 45_000, maxCostUsd: 0.05 },
     );
@@ -182,14 +195,51 @@ async function main() {
     const reconnectFollowUpOk = followUp.result.status === "completed"
       && followUp.runtime === undefined
       && followUp.result.data?.visits?.lead.ref.id === String(target.id)
-      && finalAssistant?.contextRefs?.[0]?.id === String(target.id)
+      && finalAssistant?.contextRefs?.selected.lead?.id === String(target.id)
       && followUpUsage.length === 0
       && searchCallCount === 1;
-    const totalEventCount = events.length + followUpEvents.length;
-    const insertedRecords = 1 + 4 + 4 + 2 + totalEventCount + usage.length + followUpUsage.length;
+    const selectedVisit = followUp.result.data?.visits?.visits[0];
+    if (!selectedVisit) throw new Error("Real lead visit list did not return a selectable visit");
+    const detailTurn = await reconnectedSlice.execute(actor, {
+      conversationId, message: "Cuéntame más sobre esta visita", selectedEntityRef: selectedVisit.ref,
+    });
+    if (!detailTurn.executionRunId) throw new Error("Selected visit detail did not create an Execution Run");
+    const detailRepository = new ConvexControlPlaneRepository(new AuthenticatedConvexHttpClient(convexUrl, token));
+    const [detailMessages, detailEvents, detailUsage] = await Promise.all([
+      detailRepository.listMessages(actor, { conversationId, limit: 200 }),
+      detailRepository.listEvents(actor, { executionRunId: detailTurn.executionRunId, limit: 500 }),
+      detailRepository.listUsage(actor, { runId: detailTurn.executionRunId, limit: 50 }),
+    ]);
+    const durableDetail = [...detailMessages].reverse().find((message) => message.role === "assistant");
+    const detailReconnectSlice = new CrmSearchLeadsVerticalSlice(
+      detailRepository, directPort, directContextPort, directVisitsPort, directVisitDetailPort,
+      new OpenRouterAdapter({ apiKey: required("OPENROUTER_API_KEY"), appName: "Hostmate Visit Detail Reconnect E2E" }),
+      { model, timeoutMs: 45_000, maxCostUsd: 0.05 },
+    );
+    const detailFollowUp = await detailReconnectSlice.execute(actor, { conversationId, message: "Cuéntame más" });
+    if (!detailFollowUp.executionRunId) throw new Error("Reconnected visit detail did not create an Execution Run");
+    const finalRepository = new ConvexControlPlaneRepository(new AuthenticatedConvexHttpClient(convexUrl, token));
+    const [finalMessages, detailFollowUpEvents, detailFollowUpUsage] = await Promise.all([
+      finalRepository.listMessages(actor, { conversationId, limit: 200 }),
+      finalRepository.listEvents(actor, { executionRunId: detailFollowUp.executionRunId, limit: 500 }),
+      finalRepository.listUsage(actor, { runId: detailFollowUp.executionRunId, limit: 50 }),
+    ]);
+    const finalDetailAssistant = [...finalMessages].reverse().find((message) => message.role === "assistant");
+    const detailOk = detailTurn.result.status === "completed"
+      && detailTurn.result.data?.visitDetail?.ref.id === selectedVisit.ref.id
+      && detailTurn.runtime === undefined && detailUsage.length === 0
+      && durableDetail?.contextRefs?.selected.lead?.id === String(target.id)
+      && durableDetail?.contextRefs?.selected.visit?.id === selectedVisit.ref.id
+      && detailFollowUp.result.status === "completed"
+      && detailFollowUp.result.data?.visitDetail?.ref.id === selectedVisit.ref.id
+      && detailFollowUp.runtime === undefined && detailFollowUpUsage.length === 0
+      && finalDetailAssistant?.contextRefs?.selected.lead?.id === String(target.id)
+      && finalDetailAssistant?.contextRefs?.selected.visit?.id === selectedVisit.ref.id;
+    const totalEventCount = events.length + followUpEvents.length + detailEvents.length + detailFollowUpEvents.length;
+    const insertedRecords = 1 + 8 + 8 + 4 + totalEventCount + usage.length + followUpUsage.length + detailUsage.length + detailFollowUpUsage.length;
     process.stdout.write(`${JSON.stringify({
       verdict: turn.result.status === "completed" && (searchData?.matches.length ?? 0) === 1
-        && visitsData?.lead.ref.id === String(target.id) && durableContextOk && reconnectFollowUpOk ? "PASS" : "FAIL",
+        && visitsData?.lead.ref.id === String(target.id) && durableContextOk && reconnectFollowUpOk && detailOk ? "PASS" : "FAIL",
       resultStatus: turn.result.status, resultCount: searchData?.matches.length ?? 0, visitsLeadId: visitsData?.lead.ref.id,
       visitCount: visitsData?.visits.length, targetHasVisits,
       errorCode: turn.result.errors[0]?.code, errorMessage: turn.result.errors[0]?.message,
@@ -205,7 +255,19 @@ async function main() {
       reconnectFollowUp: {
         status: followUp.result.status, modelCalls: followUpUsage.length, searchCallsAfterFollowUp: searchCallCount,
         eventCount: followUpEvents.length, durableMessageCount: followUpMessages.length,
-        retainedLeadRef: finalAssistant?.contextRefs?.[0]?.id, toolScope: followUpEvents.find((event) => event.type === "interaction.dispatch.resolved")?.payloadRedacted,
+        retainedLeadRef: finalAssistant?.contextRefs?.selected.lead?.id, toolScope: followUpEvents.find((event) => event.type === "interaction.dispatch.resolved")?.payloadRedacted,
+      },
+      visitDetail: {
+        kind: detailTurn.result.data?.visitDetail?.kind, selectedVisitRef: selectedVisit.ref,
+        status: detailTurn.result.status, reconnectStatus: detailFollowUp.result.status,
+        modelCalls: detailUsage.length + detailFollowUpUsage.length,
+        durableSelectedLead: finalDetailAssistant?.contextRefs?.selected.lead?.id,
+        durableSelectedVisit: finalDetailAssistant?.contextRefs?.selected.visit?.id,
+        latencyMs: detailTurn.result.data?.visitDetail?.telemetry?.latencyMs,
+        attributionLatencyMs: detailTurn.result.data?.visitDetail?.telemetry?.attributionLatencyMs,
+        detailServiceLatencyMs: detailTurn.result.data?.visitDetail?.telemetry?.detailServiceLatencyMs,
+        toolScope: detailEvents.find((event) => event.type === "interaction.dispatch.resolved")?.payloadRedacted,
+        reconnectToolScope: detailFollowUpEvents.find((event) => event.type === "interaction.dispatch.resolved")?.payloadRedacted,
       },
       convexInsertedRecords: insertedRecords,
       convexDocumentWrites: insertedRecords + 16,
