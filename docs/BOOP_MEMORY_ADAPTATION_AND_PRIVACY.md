@@ -322,14 +322,47 @@ Run an internal staging observation period for Explicit User Preference Memory o
 
 ## 28. Staging validation evidence
 
-To be filled from the deployed canary without production changes:
+Certified on 2026-08-15 against the dedicated staging canary, with production
+left unchanged:
 
-- Remember: pending.
-- Cross-conversation recall: pending.
-- Explicit request override: pending.
-- Forget and deleted-vector exclusion: pending.
-- Prompt injection: pending.
-- Multi-user/multi-tenant/admin isolation: pending.
-- Browser MemoryPanel/Graph E2E: pending.
-- Six-capability regression: pending.
-- Cost/latency: pending.
+- Remember: PASS. The authenticated user created a private `preference`
+  (`property_order=price_asc`) through AI Chat. The resulting record used the
+  existing `memoryRecords` storage/indexing path and was visible in realtime.
+- Cross-conversation recall: PASS. A different conversation recovered the
+  preference and grounded `property.search_properties.v1` with
+  `order=price_asc`.
+- Explicit request override: PASS. “más caro al más barato” grounded
+  `order=price_desc`; current input won over recalled weak context.
+- Forget and deleted-vector exclusion: PASS. Forget logically deleted the
+  active preference, emitted `memory.deleted`, updated the UI to zero active
+  records and a later conversation applied no remembered order.
+- Superseding: PASS. A replacement preference archived the previous active
+  record and left exactly one active value for `property_order`.
+- Prompt injection: PASS. Authority escalation and product-content attempts
+  returned `permission_denied`; retrieved lead/property text cannot become an
+  explicit user-memory request.
+- Isolation: PASS. Same-tenant User B, Tenant B User C and a superadmin acting
+  in Tenant A each saw zero records from User A. A non-canary write returned
+  HTTP 403.
+- Browser E2E: PASS. Remember, list/detail, filters, metadata, embedding status,
+  Graph, recalled ordering, explicit override, inline delete/Forget, events
+  and realtime empty state were exercised in the staging application. The
+  native browser confirmation discovered during testing was replaced by an
+  accessible inline two-step confirmation.
+- Six-capability regression: PASS for
+  `crm.search_leads.v1`, `crm.get_lead_context.v1`,
+  `visits.list_lead_visits.v1`, `visits.get_visit.v1`,
+  `property.search_properties.v1` and `property.get_property.v1`, all at
+  contract version 1 and with their exact allowed scopes.
+- Automated regression: Boop 147/147 tests; Hostmate API 1,255 passed and 44
+  skipped; Hostmate web 163/163 tests. Typecheck, lint and production builds
+  passed.
+- Cost/latency sample: explicit write 1,960 ms total; OpenRouter
+  `baai/bge-large-en-v1.5` embedding 796 ms, 22 input tokens and
+  `$0.00000022`; cross-conversation recall/property turn 7,135 ms; explicit
+  override turn 7,132 ms; Forget 989 ms. Usage and cost are persisted with the
+  Memory event/run metadata.
+- Runtime gates: Explicit User Memory ON only for tenant 15/user 43; automatic
+  extraction, Tenant Memory and consolidation remain OFF. The interaction
+  model remains `deepseek/deepseek-v4-flash-0731` with maximum reasoning;
+  memory model roles and embedding provider are independently configurable.
