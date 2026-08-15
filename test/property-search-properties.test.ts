@@ -72,11 +72,13 @@ describe("property.search_properties.v1 contract", () => {
 
   it("grounds every model-proposed optional and keeps product defaults outside the model", () => {
     expect(bindPropertyFiltersToObjective({ city: "Manresa", propertyType: "piso", status: "activo", operation: "comprar", rooms: 2 }, "Busca pisos en Manresa")).toEqual({ city: "Manresa", propertyType: "piso" });
-    expect(bindPropertyFiltersToObjective({ operation: "alquilar", maxPrice: 1500, status: "activo" }, "Enséñame pisos de alquiler hasta 1.500 €")).toEqual({ operation: "alquilar", maxPrice: 1500 });
+    expect(bindPropertyFiltersToObjective({ city: "Manresa" }, "Busca pisos en Manresa")).toEqual({ city: "Manresa", propertyType: "piso" });
+    expect(bindPropertyFiltersToObjective({ city: "Manresa" }, "Busca pisos o casas en Manresa")).toEqual({ city: "Manresa" });
+    expect(bindPropertyFiltersToObjective({ operation: "alquilar", maxPrice: 1500, status: "activo" }, "Enséñame pisos de alquiler hasta 1.500 €")).toEqual({ operation: "alquilar", propertyType: "piso", maxPrice: 1500 });
     expect(bindPropertyFiltersToObjective({ propertyType: "casa", rooms: 3, features: ["terraza", "piscina"] }, "Busca casas con al menos 3 habitaciones y terraza")).toEqual({ propertyType: "casa", features: ["terraza"] });
     expect(bindPropertyFiltersToObjective({ query: "ABC123", order: "price_asc", city: "Madrid" }, "Encuentra el inmueble con referencia ABC123")).toEqual({ query: "ABC123" });
     expect(bindPropertyFiltersToObjective({ query: "ABC123", maxArea: 100_000_000, maxPrice: 100_000_000 }, "Encuentra el inmueble con referencia ABC123")).toEqual({ query: "ABC123" });
-    expect(bindPropertyFiltersToObjective({ city: "Manresa", order: "price_asc" }, "Busca los pisos más baratos en Manresa")).toEqual({ city: "Manresa", order: "price_asc" });
+    expect(bindPropertyFiltersToObjective({ city: "Manresa", order: "price_asc" }, "Busca los pisos más baratos en Manresa")).toEqual({ city: "Manresa", propertyType: "piso", order: "price_asc" });
   });
 
   it("keeps ActorContext in closure, sanitizes DTOs and returns canonical refs", async () => {

@@ -94,17 +94,68 @@ La vista genérica de Executions muestra profile/property version, tool version,
 
 ## 17. Staging validation
 
-Infraestructura validada: `it_re-v2-dev` (image `property-search-20260815-r2`) e `it_re-agent-platform-runtime-staging` (image `property-search-20260815-r3`), Convex `different-mockingbird-928`, MySQL `realestate_staging`. Solo tenant 15/users 42 y 43 permanecen allowlisted. Tenant 16 queda fuera. `it_re-v2-prod` permaneció 1/1 y sin cambios.
+Infraestructura validada: `it_re-v2-dev` (image `property-search-20260815-r2`) e `it_re-agent-platform-runtime-staging` (image `property-search-20260815-r4`), Convex `different-mockingbird-928`, MySQL `realestate_staging`. Solo tenant 15/users 42 y 43 permanecen allowlisted. Tenant 16 queda fuera. `it_re-v2-prod` no se desplegó ni modificó y producción contiene cero referencias `STAGING-PM-%`.
 
-Inventario staging auditado read-only: tenant 15 tiene únicamente property 851 (`STAGING-MOBILE-001`, Barcelona), activa, sin precio/rooms/baths/area/features; tenant 16 tiene property 852 (`STAGING-MOBILE-FOREIGN`), también incompleta. Por la prohibición explícita de create/update property no se fabrican fixtures. Esto impide certificar en staging los positivos multiple, price y feature; se mantiene como gap de aceptación, no se oculta con datos productivos.
+## Paz Malet staging fixture certification
+
+### Autoridad y snapshots
+
+- SOURCE read-only: `realestate`, tenant `Paz Malet`, `tenant_id=11`.
+- TARGET: `realestate_staging`, tenant `Hostmate Mobile Staging`, `tenant_id=15`.
+- Guardrail: `11 !== 15`; la escritura aborta si base, ID/nombre del tenant o referencias existentes no coinciden.
+- Catálogo fuente auditado: 123 properties; muestra seleccionada: 13.
+- Snapshot pre: 123 total, 13 seleccionadas, SHA-256 `6af2f9585ff0585de0af372360f56c9d517398d3b112c03ce7c120d85c406df8`.
+- Snapshot post: 123 total, las mismas 13 PK/tenant/reference/status/`updated_at` y el mismo SHA-256.
+- Resultado: `Paz Malet source unchanged: PASS`.
+
+El hash compone PK, tenant, reference, title, operación, subtype, status, precio, ciudad/provincia/barrio, rooms, baths, superficie, doce amenities y `updated_at`. La fuente solo se consultó mediante `SELECT`; no participa en la transacción de destino.
+
+### Selección y mapping test-only
+
+La muestra maximiza cobertura de compra/alquiler, precios 2.570–990.000, 1–5 habitaciones, 1–3 baños, 40–210 m², pisos/ático/estudio, activo/alquilado y todas las amenities soportadas.
+
+| Source ID | Source ref | Staging ID | Staging ref | Cobertura principal |
+| ---: | --- | ---: | --- | --- |
+| 579 | `born` | 853 | `STAGING-PM-579` | compra, 199k, 1 habitación, balcón, AC |
+| 627 | `sants` | 854 | `STAGING-PM-627` | compra, terraza, ascensor, jardín |
+| 633 | `turo park` | 855 | `STAGING-PM-633` | alquiler, 4 habitaciones, garaje |
+| 642 | `paqui` | 856 | `STAGING-PM-642` | piscina, jardín, terraza, ascensor |
+| 658 | `bea` | 857 | `STAGING-PM-658` | compra, 650k, terraza |
+| 663 | `alfonso XII` | 858 | `STAGING-PM-663` | piscina, garaje, trastero, balcón |
+| 674 | `Joan` | 859 | `STAGING-PM-674` | boundary 450k, terraza |
+| 704 | `regomir` | 860 | `STAGING-PM-704` | compra, 240k |
+| 739 | `Gloria` | 861 | `STAGING-PM-739` | estudio, 159k |
+| 749 | `Muntaner` | 862 | `STAGING-PM-749` | 5 habitaciones, a reformar, garaje |
+| 754 | `Bea pobel sec` | 863 | `STAGING-PM-754` | ático, 520k, terraza |
+| 797 | `ferr pon` | 864 | `STAGING-PM-797` | 160k, terraza, a reformar |
+| 822 | `Aribau alquiler` | 865 | `STAGING-PM-822` | alquiler, piscina, garaje, ascensor |
+
+### Campos y mecanismo
+
+- Copiados: title de catálogo, operación/type, `property_subtype`, status, price, city, province, neighborhood, rooms, bathrooms, `area_built` y amenities booleanas allowlisted.
+- Transformados: PK autogenerada, `tenant_id=15`, reference `STAGING-PM-<sourceId>`, prefijo de title `[STAGING PM]` y timestamps nuevos de staging.
+- Omitidos/neutralizados: description y notas, direcciones/coordenadas, media/galerías/video/URLs/slugs, usuarios/agentes/AI agents, leads/visits/template values, portales, campañas, Instagram, flows, scraping/sync/publication, legal/AI/custom payloads y toda relación externa. Contacto, visitas, reserva y transparencia pública quedan desactivados.
+- Media: omitida completamente.
+- Mecanismo: `v2/scripts/seed-agent-platform-property-fixtures.mjs`, dry-run por defecto y `--apply` explícito; Prisma transaction target-only, sin endpoint público ni lectura/escritura de source durante el apply.
+- Verificación target: 13 filas/13 references únicas, IDs 853–865, tenant 15; cero ubicación sensible, contenido externo, relaciones o flags de side effects. `property.service.list` devuelve las copias.
+
+Los fixtures permanecen para regresión. Limpieza futura segura: ejecutar primero un dry-run que exija base `realestate_staging`, tenant 15, exactamente las 13 referencias allowlisted y cero filas en `RE_Leads`, `RE_Property_Agents`, `RE_Property_Portals` y `RE_Property_Template_Values`; después borrar esas 13 filas en una única transacción target-only y verificar que ninguna otra property cambió. Nunca usar source IDs ni operar en `realestate`.
+
+### Certificación funcional
+
+- Multiple: “Busca pisos en Barcelona para comprar” → total 9, returned 6, `hasMore=true`, seis EntityRefs staging distintas; todas `propertyType=piso` tras el fix mínimo de grounding.
+- Precio: pisos de compra hasta 450.000 EUR → 4 resultados, todos dentro del límite e incluye exactamente 450.000.
+- Feature: pisos de compra con piscina → IDs staging 856 y 858, ambos con piscina.
+- Combinación: compra en Barcelona hasta 700.000 EUR con terraza → 5 resultados, todos cumplen los tres filtros.
+- Orden: compra en Barcelona de menor a mayor → primeras cards 159k, 160k, 199k, 240k, 450k y 520k.
 
 ## 18. Browser E2E
 
-Completado con sesión real de Agent A en `v2-dev`: Barcelona devuelve la card 851; precio hasta 1.500 EUR y casa+terraza devuelven zero coherente con el fixture incompleto; referencia exacta devuelve 851; Reykjavik y la referencia de tenant B devuelven zero. Selección y “Cuéntame más” son deterministas y declaran la ausencia de `get_property`; el deep link `/properties?highlight=851` abre la ficha tenant-scoped. Convex añadió los runs a Executions sin reload. En viewport emulado 390×844 no hay overflow horizontal; botones Abrir y Seleccionar miden 44 px de alto. No puede existir un positivo multiple/price/feature sin autorización separada para fixtures.
+Completado con sesión real de Agent A en `v2-dev`: los cinco casos positivos, selección del staging ID 861, deep link `/properties?highlight=861`, cards con `STAGING-PM-*`, y vuelta posterior a CRM/Visits. Executions recibió todos los Interaction/Execution runs por Convex realtime sin reload; scope efectivo `property@1`, una tool `property.search_properties.v1@1`, una inferencia y EntityRefs únicamente con PK staging. En viewport real emulado 390×844 no hay overflow horizontal (`390/390`); Abrir y Seleccionar miden 44 px de alto.
 
-## 19. Multi-tenant
+## 19. Multi-tenant y provenance
 
-Tests locales prueban Agent/Admin/Superadmin tenant-wide dentro del tenant firmado, `isSuperAdmin=false` al servicio, tenant A/B disjoint, permission deny y rechazo de `tenantId`, `tenant_id`, user, agent, page, limit y SQL sort. En staging, Agent A no ve `STAGING-MOBILE-FOREIGN`; Admin 42 obtiene únicamente ID 851 para Barcelona y zero para la referencia tenant B; inyección `tenantId=16` recibe 400 y un token real sin `property.read` recibe 403.
+Agent A real (`user_id=43`, tenant 15) obtiene las copias y, para compra ordenada, únicamente IDs staging `861,864,853,860,859,863` en la primera página. La referencia de tenant B `STAGING-MOBILE-FOREIGN` devuelve 0; inyección `tenantId=16` recibe 400 y un token sin `property.read` recibe 403. Una EntityRef manual con source ID 579 y conversación nueva devuelve `permission_denied` + `STALE_REFERENCE`, cero entities y cero domain/model calls; no entra en `contextRefs.selected.property`. Producción tiene cero referencias `STAGING-PM-%` y el snapshot fuente permanece idéntico.
 
 ## 20. Performance
 
@@ -116,33 +167,32 @@ Pasó en navegador real tras el deploy final: lead search → selección/context
 
 ## 22. Tests
 
-Cobertura añadida: schema/authority injection, objective grounding —incluidos opcionales sobredimensionados inventados—, DTO, EntityRef, zero/one/multiple, permission/profile scope, precedencia de EntityRefs, one-tool/one-inference run, requested-vs-sanitized telemetry, context role preservation y 0-inference follow-up. Hostmate cubre mapping exacto a `property.service.list`, Agent/Admin/Superadmin, defaults/paginación backend-owned, DTO, permissions, tenant A/B e inyecciones. Web cubre deep-link ID parsing y cards. Resultado final local: Boop 21 files/131 tests, Hostmate internal routes targeted 53 tests, Web 33 files/161 tests; typechecks y builds pasan. El full API tuvo 1 fallo flaky ajeno (`instagram-webhook-durability`) entre 1.239 tests pasados; aislado pasó 2/2.
+Cobertura añadida: schema/authority injection, objective grounding —incluida recuperación determinista de un único property type explícito aunque el modelo lo omita—, DTO, EntityRef, zero/one/multiple, permission/profile scope, precedencia de EntityRefs, one-tool/one-inference run, requested-vs-sanitized telemetry, context role preservation y 0-inference follow-up. Hostmate cubre mapping exacto a `property.service.list`, Agent/Admin/Superadmin, defaults/paginación backend-owned, DTO, permissions, tenant A/B e inyecciones. Web cubre deep-link ID parsing y cards. La fixture tiene dry-run local/contenedor, guardrails de base/tenant/references y transacción target-only. Resultado final: Boop 21 files/131 tests; Hostmate internal routes 53 tests; Web 33 files/161 tests; typechecks y builds de runtime/API/Web pasan. Persisten únicamente los warnings conocidos de tamaño de bundle/caniuse-lite.
 
 ## 23. Problemas
 
-1. Datos staging insuficientes para los cinco casos positivos pedidos.
-2. Vocabulario histórico `venta` en el único fixture frente al canónico `comprar` del producto.
-3. Inconsistencia UI/service sobre inclusión de desactivados.
-4. El inventario canónico solo soporta counts exactos; el motor chatbot soporta rangos, pero usarlo alteraría status/defaults y relajación.
-5. La primera E2E de referencia expuso un `maxArea` inventado fuera del límite del schema antes del binder; el envelope se amplió para permitir sanitizarlo y la referencia quedó revalidada.
-6. La primera regresión visit/detail expuso colisión de contexto con property; se corrigió la precedencia y el rerun pasó. Las trazas fallidas históricas permanecen visibles, como corresponde a un control plane durable.
-7. El deep link abre la ficha estándar, que actualmente expone controles de edición también al Agent; no es una ampliación causada por la capability, pero conviene revisar esa política de producto por separado.
+1. Los fixtures revelaron que OpenRouter podía omitir `propertyType=piso` ante la frase inequívoca “Busca pisos…”. Se corrigió mínimamente en el binder: recupera un solo tipo explícito y no infiere nada si hay varios; test y rerun staging pasan 9 pisos exactos.
+2. El primer apply no escribió nada porque MySQL rechazó el alias reservado `database` en el guardrail `SELECT DATABASE()`; se cambió a `current_database`, se confirmó count 0 y el único apply posterior fue atómico.
+3. Inconsistencia UI/service sobre inclusión de desactivados, fuera de alcance.
+4. El inventario canónico solo soporta counts exactos; el motor chatbot soporta rangos, fuera de alcance.
+5. El deep link abre la ficha estándar, que actualmente expone controles de edición también al Agent; no es una ampliación causada por la capability y se mantiene fuera de alcance.
+6. La primera prueba manual de provenance omitió claims de locale/timezone y produjo un 500/Zod antes de evaluar la EntityRef; se repitió con el token canónico y dio el `STALE_REFERENCE` esperado. La traza fallida permanece durable.
 
 ## 24. Riesgos
 
 - Normalizar silenciosamente operación o relajar filtros produciría falsos positivos; se evita.
 - Una EntityRef aportada por cliente sin provenance podría contaminar contexto; selección exige que haya aparecido en un bloque previo.
 - Imágenes remotas pueden fallar; solo se entregan relative uploads o HTTPS y la UI usa `no-referrer`.
-- La ausencia de fixtures puede dar una falsa sensación de cobertura si se confunden zero tests con positivos; el gate queda explícitamente condicionado.
+- Los fixtures son datos persistentes de staging; su script fail-closed y la limpieza documentada deben conservarse para evitar borrados amplios o re-aplicaciones accidentales.
 
 ## 25. Deuda técnica
 
 - Decidir si la UI debe incluir desactivados por defecto o alinearse con el service default.
 - Migrar/normalizar fixtures históricos `venta` fuera de esta capability.
 - Evaluar, como cambio de producto independiente, rangos de rooms/baths en `property.service.list`.
-- Proveer fixtures sintéticos aprobados para multiple/price/features o un tenant interno ya poblado.
+- Mantener los 13 fixtures `STAGING-PM-*` como baseline de regresión y revisar su vigencia si cambia el schema de Properties.
 - Evaluar semantic search como capability separada, nunca fallback implícito de V1.
 
 ## 26. Recomendación de siguiente capability
 
-No abrir `property.get_property.v1` hasta cerrar el gap de datos y aprobar `property.search_properties.v1`. Una vez certificado el search con fixtures positivos reales, la siguiente capability natural es `property.get_property.v1`, usando la PK tenant-scoped y una fachada read-only específica; no debe reutilizar DTOs Prisma completos.
+El gap de datos queda cerrado y `property.search_properties.v1` puede pasar a GO. La siguiente capability natural es revisar `property.get_property.v1`, usando la PK tenant-scoped y una fachada read-only específica; no debe reutilizar DTOs Prisma completos ni implementarse sin GO explícito.

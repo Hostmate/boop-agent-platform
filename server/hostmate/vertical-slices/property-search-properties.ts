@@ -78,6 +78,13 @@ function evidenceForAny(objective: string, values: readonly string[]): boolean {
   return values.some((value) => text.includes(` ${normalize(value)} `));
 }
 
+function explicitPropertyType(objective: string): string | undefined {
+  const matches = Object.entries(TYPE_EVIDENCE)
+    .filter(([, evidence]) => evidenceForAny(objective, evidence))
+    .map(([propertyType]) => propertyType);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
 /** Removes every optional model proposal that is not evidenced by the user objective. */
 export function bindPropertyFiltersToObjective(input: PropertySearchFilters, objective: string): PropertySearchFilters {
   const text = normalize(objective);
@@ -87,6 +94,9 @@ export function bindPropertyFiltersToObjective(input: PropertySearchFilters, obj
   const typeEvidence = input.propertyType
     ? TYPE_EVIDENCE[normalize(input.propertyType)] ?? [input.propertyType]
     : [];
+  const propertyType = input.propertyType && evidenceForAny(objective, typeEvidence)
+    ? input.propertyType
+    : explicitPropertyType(objective);
   const statusEvidence: Record<string, readonly string[]> = {
     activo: ["activo", "activos", "disponible", "disponibles"], reservado: ["reservado", "reservados"],
     vendido: ["vendido", "vendidos"], alquilado: ["alquilado", "alquilados"], desactivado: ["desactivado", "desactivados", "archivado", "archivados"],
@@ -112,7 +122,7 @@ export function bindPropertyFiltersToObjective(input: PropertySearchFilters, obj
     city: containsValue(objective, input.city) ? input.city : undefined,
     neighborhood: containsValue(objective, input.neighborhood) ? input.neighborhood : undefined,
     operation,
-    propertyType: input.propertyType && evidenceForAny(objective, typeEvidence) ? input.propertyType : undefined,
+    propertyType,
     status: input.status && evidenceForAny(objective, statusEvidence[input.status] ?? [input.status]) ? input.status : undefined,
     minPrice, maxPrice,
     rooms: exactCountEvidence(objective, input.rooms, "habitacion|habitaciones|dormitorio|dormitorios") ? input.rooms : undefined,
