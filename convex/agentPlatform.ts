@@ -1,5 +1,5 @@
 import { ConvexError, v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { assertConversationOwner, canReadTenantRun, requireAgentPlatformActor } from "./agentPlatformAuth";
 
 const expectedActorArgs = {
@@ -18,30 +18,32 @@ const attemptStatus = v.union(
   v.literal("cancelled"), v.literal("timeout"), v.literal("unknown"),
 );
 
-async function tenantRun(ctx: Parameters<typeof requireAgentPlatformActor>[0], tenantId: string, runId: string) {
+type DatabaseCtx = QueryCtx | MutationCtx;
+
+async function tenantRun(ctx: DatabaseCtx, tenantId: string, runId: string) {
   return await ctx.db.query("agentPlatformRuns")
     .withIndex("by_tenant_run", (q) => q.eq("tenantId", tenantId).eq("runId", runId))
     .unique();
 }
 
-async function ownedTenantRun(ctx: Parameters<typeof requireAgentPlatformActor>[0], tenantId: string, userId: string, runId: string) {
+async function ownedTenantRun(ctx: DatabaseCtx, tenantId: string, userId: string, runId: string) {
   const run = await tenantRun(ctx, tenantId, runId);
   if (!run || run.actorUserId !== userId) throw new ConvexError("RUN_FORBIDDEN");
   return run;
 }
 
-async function tenantConversation(ctx: Parameters<typeof requireAgentPlatformActor>[0], tenantId: string, conversationId: string) {
+async function tenantConversation(ctx: DatabaseCtx, tenantId: string, conversationId: string) {
   return await ctx.db.query("agentPlatformConversations")
     .withIndex("by_tenant_conversation", (q) => q.eq("tenantId", tenantId).eq("conversationId", conversationId))
     .unique();
 }
 
-async function tenantAttempt(ctx: Parameters<typeof requireAgentPlatformActor>[0], tenantId: string, attemptId: string) {
+async function tenantAttempt(ctx: DatabaseCtx, tenantId: string, attemptId: string) {
   return await ctx.db.query("agentPlatformAttempts")
     .withIndex("by_tenant_attempt", (q) => q.eq("tenantId", tenantId).eq("attemptId", attemptId)).unique();
 }
 
-async function ownedAttempt(ctx: Parameters<typeof requireAgentPlatformActor>[0], tenantId: string, userId: string, attemptId: string) {
+async function ownedAttempt(ctx: DatabaseCtx, tenantId: string, userId: string, attemptId: string) {
   const attempt = await tenantAttempt(ctx, tenantId, attemptId);
   if (!attempt) throw new ConvexError("ATTEMPT_NOT_FOUND");
   await ownedTenantRun(ctx, tenantId, userId, attempt.runId);

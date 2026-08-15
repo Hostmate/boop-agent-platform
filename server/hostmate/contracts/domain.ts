@@ -1,5 +1,6 @@
 export type ExecutionProfileId =
   | "crm"
+  | "memory"
   | "demand-matching"
   | "property"
   | "visits"

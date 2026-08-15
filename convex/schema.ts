@@ -52,15 +52,40 @@ export default defineSchema({
     metadata: v.optional(v.string()),
     createdAt: v.number(),
     imageStorageIds: v.optional(v.array(v.id("_storage"))),
+    // Hostmate's SaaS scope is an optional sidecar on the original Boop
+    // record. Legacy personal-Boop rows remain valid, while Agent Platform
+    // functions require every field below and never query unscoped rows.
+    tenantId: v.optional(v.string()),
+    ownerUserId: v.optional(v.string()),
+    scope: v.optional(v.union(v.literal("user"), v.literal("tenant"))),
+    category: v.optional(v.union(
+      v.literal("preference"),
+      v.literal("communication_style"),
+      v.literal("formatting"),
+      v.literal("workflow_preference"),
+      v.literal("correction"),
+    )),
+    preferenceKey: v.optional(v.string()),
+    sourceType: v.optional(v.union(v.literal("explicit_user"), v.literal("automatic_extraction"), v.literal("consolidation"))),
+    sourceRunId: v.optional(v.string()),
+    visibility: v.optional(v.literal("private")),
+    consentBasis: v.optional(v.literal("explicit_request")),
+    containsSensitiveData: v.optional(v.boolean()),
+    retentionPolicy: v.optional(v.string()),
+    embeddingProvider: v.optional(v.string()),
+    embeddingModel: v.optional(v.string()),
+    deletedAt: v.optional(v.number()),
   })
     .index("by_memory_id", ["memoryId"])
     .index("by_tier", ["tier"])
     .index("by_segment", ["segment"])
     .index("by_lifecycle", ["lifecycle"])
+    .index("by_scope_lifecycle_created", ["tenantId", "ownerUserId", "scope", "lifecycle", "createdAt"])
+    .index("by_scope_preference_lifecycle", ["tenantId", "ownerUserId", "scope", "preferenceKey", "lifecycle"])
     .vectorIndex("by_embedding", {
       vectorField: "embedding",
       dimensions: 1024,
-      filterFields: ["lifecycle"],
+      filterFields: ["tenantId", "ownerUserId", "scope", "lifecycle"],
     }),
 
   executionAgents: defineTable({
@@ -152,9 +177,14 @@ export default defineSchema({
     agentId: v.optional(v.string()),
     data: v.string(),
     createdAt: v.number(),
+    tenantId: v.optional(v.string()),
+    ownerUserId: v.optional(v.string()),
+    scope: v.optional(v.union(v.literal("user"), v.literal("tenant"))),
+    visibility: v.optional(v.literal("private")),
   })
     .index("by_conversation", ["conversationId"])
-    .index("by_type", ["eventType"]),
+    .index("by_type", ["eventType"])
+    .index("by_scope_created", ["tenantId", "ownerUserId", "scope", "createdAt"]),
 
   automations: defineTable({
     automationId: v.string(),

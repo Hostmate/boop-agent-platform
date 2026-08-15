@@ -39,6 +39,13 @@ function profile(input: ExecutionProfileDefinition): ExecutionProfileDefinition 
 const STANDARD_LIMITS = { maxToolCalls: 8, maxIterations: 6, timeoutMs: 60_000, maxResultBytes: 128_000 } as const;
 
 export const FOUNDATION_PROFILES: Readonly<Record<ExecutionProfileId, ExecutionProfileDefinition>> = Object.freeze({
+  memory: profile({
+    id: "memory", version: 1, responsibility: "Private user preferences backed by Boop Memory.",
+    boundaries: ["No product data, authority, tenant-shared memory, automatic extraction or product writes."],
+    compatibleToolBundles: ["boop-memory.user"], compatibleSkillIds: [],
+    objectiveClasses: ["memory.remember", "memory.forget", "memory.recall"], limits: STANDARD_LIMITS,
+    writePolicy: { enabled: true, maxRisk: "R1", requirePreconditions: true }, modelRoute: "cheap-read",
+  }),
   crm: profile({
     id: "crm", version: 1, responsibility: "Leads, opportunities, tasks, notes, ownership and tags.",
     boundaries: ["No property, matching, visit or external communication writes."],

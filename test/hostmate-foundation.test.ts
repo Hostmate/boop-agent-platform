@@ -33,10 +33,10 @@ describe("Hostmate foundation contracts", () => {
     expect(() => createActorContext({ ...context, role: "admin", isSuperAdmin: true })).toThrow("inconsistent");
   });
 
-  it("declares all eight execution profiles without model IDs", () => {
+  it("declares all nine execution profiles without model IDs", () => {
     const profiles = new ExecutionProfileRegistry().list();
     expect(profiles.map((profile) => profile.id)).toEqual([
-      "crm", "demand-matching", "property", "visits", "communications", "marketing", "insights", "workspace-admin",
+      "memory", "crm", "demand-matching", "property", "visits", "communications", "marketing", "insights", "workspace-admin",
     ]);
     expect(JSON.stringify(profiles)).not.toMatch(/gpt-|claude-|gemini-/i);
   });

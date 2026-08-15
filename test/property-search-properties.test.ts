@@ -103,6 +103,8 @@ describe("property.search_properties.v1 contract", () => {
     expect(bindPropertyFiltersToObjective({ query: "ABC123", order: "price_asc", city: "Madrid" }, "Encuentra el inmueble con referencia ABC123")).toEqual({ query: "ABC123" });
     expect(bindPropertyFiltersToObjective({ query: "ABC123", maxArea: 100_000_000, maxPrice: 100_000_000 }, "Encuentra el inmueble con referencia ABC123")).toEqual({ query: "ABC123" });
     expect(bindPropertyFiltersToObjective({ city: "Manresa", order: "price_asc" }, "Busca los pisos más baratos en Manresa")).toEqual({ city: "Manresa", propertyType: "piso", order: "price_asc" });
+    expect(bindPropertyFiltersToObjective({ city: "Barcelona" }, "Busca pisos en Barcelona", "price_asc")).toEqual({ city: "Barcelona", propertyType: "piso", order: "price_asc" });
+    expect(bindPropertyFiltersToObjective({ city: "Barcelona", order: "price_asc" }, "Busca pisos en Barcelona y ordénalos del más caro al más barato", "price_asc")).toEqual({ city: "Barcelona", propertyType: "piso", order: "price_desc" });
   });
 
   it("keeps ActorContext in closure, sanitizes DTOs and returns canonical refs", async () => {

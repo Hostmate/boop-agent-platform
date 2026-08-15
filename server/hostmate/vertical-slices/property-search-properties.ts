@@ -26,6 +26,8 @@ import {
 import { OpenRouterAdapter, OpenRouterRuntimeError, type OpenRouterReasoningEffort, type OpenRouterRuntimeResult } from "../runtime/openrouter-adapter.js";
 import { SkillRegistry } from "../skills/registry.js";
 import { ProductToolRegistry } from "../tools/registry.js";
+import type { PropertyOrderRecall } from "../memory/repository.js";
+import { explicitPropertyOrder } from "../memory/policy.js";
 
 export type PropertySearchPropertiesSliceConfig = Readonly<{
   model: string;
@@ -33,6 +35,7 @@ export type PropertySearchPropertiesSliceConfig = Readonly<{
   reasoningEffort?: OpenRouterReasoningEffort;
   timeoutMs?: number;
   maxCostUsd?: number;
+  weakPreference?: PropertyOrderRecall;
 }>;
 
 export type PropertySearchTurnResult = Readonly<{
@@ -95,7 +98,7 @@ function explicitPropertyType(objective: string): string | undefined {
 }
 
 /** Removes every optional model proposal that is not evidenced by the user objective. */
-export function bindPropertyFiltersToObjective(input: PropertySearchFilters, objective: string): PropertySearchFilters {
+export function bindPropertyFiltersToObjective(input: PropertySearchFilters, objective: string, weakOrder?: "price_asc" | "price_desc" | "newest"): PropertySearchFilters {
   const text = normalize(objective);
   const operation = input.operation && (input.operation === "comprar"
     ? evidenceForAny(objective, ["comprar", "compra", "venta", "en venta"])
@@ -122,10 +125,9 @@ export function bindPropertyFiltersToObjective(input: PropertySearchFilters, obj
   const maxArea = input.maxArea != null && hasNumber(numberText, input.maxArea) && areaEvidence
     && /\b(hasta|maximo|maxima|menos de|por debajo de|como mucho|entre)\b/.test(text) ? input.maxArea : undefined;
   const features = input.features?.filter((feature) => evidenceForAny(objective, FEATURE_EVIDENCE[feature] ?? [feature]));
-  const order = input.order === "price_asc" && /\b(mas barato|mas baratos|menor precio|precio ascendente)\b/.test(text) ? input.order
-    : input.order === "price_desc" && /\b(mas caro|mas caros|mayor precio|precio descendente)\b/.test(text) ? input.order
-    : input.order === "newest" && /\b(mas reciente|mas recientes|nuevo|nuevos|ultima incorporacion)\b/.test(text) ? input.order
-    : undefined;
+  // The current request is authoritative. A recalled preference is only a
+  // weak allowlisted default when the user did not specify an order now.
+  const order = explicitPropertyOrder(objective) ?? weakOrder;
   return propertySearchPropertiesInputCleanup({
     query: containsValue(objective, input.query) ? input.query : undefined,
     city: containsValue(objective, input.city) ? input.city : undefined,
@@ -288,7 +290,7 @@ export class PropertySearchPropertiesVerticalSlice {
     let sanitizedToolInput: PropertySearchFilters | undefined;
     const boundPort: PropertySearchPort = {
       search: (boundActor, modelInput) => {
-        sanitizedToolInput = bindPropertyFiltersToObjective(modelInput, message);
+        sanitizedToolInput = bindPropertyFiltersToObjective(modelInput, message, this.config.weakPreference?.order);
         return this.propertySearch.search(boundActor, sanitizedToolInput);
       },
     };
@@ -331,6 +333,23 @@ export class PropertySearchPropertiesVerticalSlice {
     await this.repository.updateAttempt(actor, { attemptId, expectedStatus: "queued", patch: { status: "running", startedAt: Date.now() } });
     await this.repository.updateRun(actor, executionRunId, { status: "running" }, "queued");
     await event("execution.started", { profile: "property", profileVersion: dispatch.profile.version, requestedModel: this.config.model });
+    if (this.config.weakPreference) {
+      const recalled = this.config.weakPreference;
+      await event("memory.preference.applied", {
+        memoryId: recalled.record.memoryId, category: recalled.record.category,
+        preferenceKey: recalled.record.preferenceKey, value: recalled.order,
+        retrievalMode: recalled.mode, score: recalled.score, authority: "weak_user_preference",
+      });
+      if (recalled.embedding) {
+        await this.repository.recordUsage(actor, {
+          usageId: randomUUID(), runId: executionRunId, attemptId,
+          requestedModel: recalled.embedding.model, resolvedModel: recalled.embedding.model,
+          provider: recalled.embedding.provider, inputTokens: recalled.embedding.inputTokens,
+          outputTokens: 0, reasoningTokens: 0, cachedTokens: 0, costUsd: recalled.embedding.costUsd,
+          latencyMs: recalled.latencyMs, fallbackUsed: false, finishReason: "embedding", createdAt: Date.now(),
+        });
+      }
+    }
     const runtimeTools = toolRegistry.compileRuntimeTools({
       resolved: dispatch.toolResolution, actor, policy: new DefaultPolicyEngine(), profileId: "property",
       decisionId: () => randomUUID(), hasRequiredPreconditions: () => true,

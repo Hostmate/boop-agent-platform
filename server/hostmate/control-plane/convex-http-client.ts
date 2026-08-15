@@ -21,6 +21,10 @@ export class AuthenticatedConvexHttpClient implements ConvexControlPlaneClient {
     return this.client.query(makeFunctionReference<"query">(name), args) as Promise<T>;
   }
 
+  action<T>(name: string, args: Record<string, unknown>): Promise<T> {
+    return this.client.action(makeFunctionReference<"action">(name), args) as Promise<T>;
+  }
+
   currentActor(): Promise<ActorContextInput> {
     return this.query<ActorContextInput>("agentPlatform:currentActor", {});
   }

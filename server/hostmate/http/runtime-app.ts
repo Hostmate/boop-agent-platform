@@ -17,6 +17,9 @@ import { PropertySearchPropertiesVerticalSlice } from "../vertical-slices/proper
 import { classifyInteractionTurn } from "../interaction/turn-classifier.js";
 import { createActorTokenVerifier, type VerifiedActorClaims } from '../security/actor-token-verifier.js';
 import { randomUUID } from 'node:crypto';
+import { classifyExplicitMemoryCommand, explicitPropertyOrder } from '../memory/policy.js';
+import { BoopScopedMemoryRepository, type PropertyOrderRecall } from '../memory/repository.js';
+import { ExplicitUserMemoryVerticalSlice } from '../vertical-slices/explicit-user-memory.js';
 
 const requestSchema = z.object({
   conversationId: z.string().uuid(),
@@ -35,6 +38,14 @@ export type AgentPlatformRuntimeConfig = Readonly<{
   model: string;
   fallbackModels?: readonly string[];
   reasoningEffort?: OpenRouterReasoningEffort;
+  memory?: Readonly<{
+    enabled: boolean;
+    allowedTenantIds: readonly string[];
+    allowedUserIds: readonly string[];
+    automaticExtractionEnabled: false;
+    tenantScopeEnabled: false;
+    consolidationEnabled: false;
+  }>;
   maxConcurrentTurns?: number;
   isReady?: () => boolean;
   issuer?: string;
@@ -70,14 +81,34 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
     const repository = new ConvexControlPlaneRepository(convex);
     let priorMessages: readonly AgentMessageRecord[] = [];
     try { priorMessages = [...await repository.listMessages(actor, { conversationId: input.conversationId, limit: 200 })]; } catch { /* New conversation. */ }
+    const memoryAllowed = Boolean(
+      config.memory?.enabled
+      && config.memory.allowedTenantIds.includes(actor.tenantId)
+      && config.memory.allowedUserIds.includes(actor.userId)
+      && actor.permissions.includes("memory.read")
+      && actor.permissions.includes("memory.write"),
+    );
+    const memoryCommand = classifyExplicitMemoryCommand(input.message);
+    if (memoryCommand) {
+      if (!memoryAllowed) throw new Error("MEMORY_FORBIDDEN");
+      return {
+        ...await new ExplicitUserMemoryVerticalSlice(repository, new BoopScopedMemoryRepository(convex))
+          .execute(actor, { conversationId: input.conversationId, message: input.message, command: memoryCommand }),
+        controlPlaneWrites: convex.writeMetrics(),
+      };
+    }
     const profile = classifyInteractionTurn({ message: input.message, selectedEntityRef: input.selectedEntityRef, priorMessages });
     if (profile === "property") {
+      let weakPreference: PropertyOrderRecall | undefined;
+      if (memoryAllowed && !explicitPropertyOrder(input.message)) {
+        weakPreference = await new BoopScopedMemoryRepository(convex).recallPropertyOrder(actor, input.conversationId) ?? undefined;
+      }
       const slice = new PropertySearchPropertiesVerticalSlice(
         repository,
         new HostmateHttpPropertySearchPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
         new HostmateHttpPropertyDetailPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
         new OpenRouterAdapter({ apiKey: config.openRouterApiKey, appName: "Hostmate Agent Platform" }),
-        { model: config.model, fallbackModels: config.fallbackModels, reasoningEffort: config.reasoningEffort },
+        { model: config.model, fallbackModels: config.fallbackModels, reasoningEffort: config.reasoningEffort, weakPreference },
       );
       const result = await slice.execute(actor, { ...input, requestId: context.requestId, abortController: context.abortController });
       return { ...result, controlPlaneWrites: convex.writeMetrics() };
@@ -139,8 +170,9 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const unauthenticated = /UNAUTHENTICATED|JWT|identity/i.test(message);
+      const forbidden = /FORBIDDEN/.test(message);
       process.stderr.write(`${JSON.stringify({ component: "agent-platform-runtime", event: "turn_failed", requestId, kind: error instanceof Error ? error.name : "unknown", unauthenticated })}\n`);
-      return res.status(unauthenticated ? 401 : 500).json({ success: false, error: unauthenticated ? "UNAUTHENTICATED" : "INTERNAL_ERROR" });
+      return res.status(unauthenticated ? 401 : forbidden ? 403 : 500).json({ success: false, error: unauthenticated ? "UNAUTHENTICATED" : forbidden ? "FORBIDDEN" : "INTERNAL_ERROR" });
     } finally {
       activeTurns -= 1;
     }

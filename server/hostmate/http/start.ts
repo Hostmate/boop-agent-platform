@@ -15,6 +15,25 @@ function optionalReasoningEffort(name: string): OpenRouterReasoningEffort | unde
   return value as OpenRouterReasoningEffort;
 }
 
+function idList(name: string): string[] {
+  return (process.env[name] ?? "").split(",").map((value) => value.trim()).filter((value) => /^[1-9]\d*$/.test(value));
+}
+
+function memoryConfig(): NonNullable<Parameters<typeof createAgentPlatformRuntimeApp>[0]["memory"]> {
+  const enabled = process.env.AGENT_PLATFORM_MEMORY_ENABLED === "true";
+  if (!enabled) return { enabled: false, allowedTenantIds: [], allowedUserIds: [], automaticExtractionEnabled: false, tenantScopeEnabled: false, consolidationEnabled: false };
+  const allowedTenantIds = idList("AGENT_PLATFORM_MEMORY_ALLOWED_TENANT_IDS");
+  const allowedUserIds = idList("AGENT_PLATFORM_MEMORY_ALLOWED_USER_IDS");
+  if (!allowedTenantIds.length || !allowedUserIds.length) throw new Error("Memory canary requires explicit tenant and user allowlists");
+  const automaticExtractionEnabled = process.env.AGENT_PLATFORM_MEMORY_AUTOMATIC_EXTRACTION_ENABLED === "true";
+  const tenantScopeEnabled = process.env.AGENT_PLATFORM_MEMORY_TENANT_SCOPE_ENABLED === "true";
+  const consolidationEnabled = process.env.AGENT_PLATFORM_MEMORY_CONSOLIDATION_ENABLED === "true";
+  if (automaticExtractionEnabled || tenantScopeEnabled || consolidationEnabled) {
+    throw new Error("Memory V1 requires automatic extraction, tenant scope and consolidation to remain disabled");
+  }
+  return { enabled, allowedTenantIds, allowedUserIds, automaticExtractionEnabled, tenantScopeEnabled, consolidationEnabled };
+}
+
 const port = Number(process.env.AGENT_PLATFORM_RUNTIME_PORT ?? 4310);
 const shutdownTimeoutMs = Number(process.env.AGENT_PLATFORM_SHUTDOWN_TIMEOUT_MS ?? 55_000);
 const convexUrl = process.env.CONVEX_URL?.trim() || required("VITE_CONVEX_URL");
@@ -43,6 +62,7 @@ const app = createAgentPlatformRuntimeApp({
   openRouterApiKey: required("OPENROUTER_API_KEY"),
   model: required("AGENT_PLATFORM_CRM_MODEL"),
   reasoningEffort: optionalReasoningEffort("AGENT_PLATFORM_REASONING_EFFORT"),
+  memory: memoryConfig(),
   fallbackModels: process.env.AGENT_PLATFORM_CRM_FALLBACK_MODELS?.split(",").map((value) => value.trim()).filter(Boolean),
   maxConcurrentTurns: Number(process.env.AGENT_PLATFORM_MAX_CONCURRENT_TURNS ?? 8),
   issuer: required('AGENT_PLATFORM_JWT_ISSUER'),

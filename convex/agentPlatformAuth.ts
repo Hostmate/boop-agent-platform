@@ -1,5 +1,5 @@
 import { ConvexError } from "convex/values";
-import type { MutationCtx, QueryCtx } from "./_generated/server";
+import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
 
 export type ConvexActor = {
   tenantId: string;
@@ -14,7 +14,7 @@ export type ConvexActor = {
 };
 
 export async function requireAgentPlatformActor(
-  ctx: QueryCtx | MutationCtx,
+  ctx: QueryCtx | MutationCtx | ActionCtx,
   expected?: { expectedTenantId?: string; expectedUserId?: string },
 ): Promise<ConvexActor> {
   const identity = await ctx.auth.getUserIdentity();

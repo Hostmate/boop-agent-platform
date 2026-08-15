@@ -12,6 +12,7 @@ import type {
 export interface ConvexControlPlaneClient {
   mutation<T>(name: string, args: Record<string, unknown>): Promise<T>;
   query<T>(name: string, args: Record<string, unknown>): Promise<T>;
+  action<T>(name: string, args: Record<string, unknown>): Promise<T>;
 }
 
 /**
