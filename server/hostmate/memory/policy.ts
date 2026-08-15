@@ -31,7 +31,7 @@ function normalized(value: string): string {
 
 export function classifyExplicitMemoryCommand(message: string): ExplicitMemoryCommand | null {
   const trimmed = message.trim();
-  const remember = trimmed.match(/^(?:(?:oye[,;:]?\s*)?(?:recuerda|recuerd|memoriza|acu[eé]rdate|recorda)(?:\s+de\s+que|\s+que|\s*:\s*)?|quiero\s+que\s+de\s+ahora\s+en\s+adelante\s+|a\s+partir\s+de\s+ahora\s+|siempre\s+que\s+(?:busque\s+inmuebles|prepare(?:s)?\s+una\s+visita)[,;:]?\s*)(.+)$/iu);
+  const remember = trimmed.match(/^(?:(?:oye[,;:]?\s*)?(?:recuerda|recuerd|memoriza|acu[eé]rdate|recorda)(?:\s+de\s+que|\s+que|\s*:\s*)?|quiero\s+que\s+de\s+ahora\s+en\s+adelante[,;:]?\s+|a\s+partir\s+de\s+ahora[,;:]?\s+|siempre\s+que\s+(?:busque\s+inmuebles|prepare(?:s)?\s+una\s+visita)[,;:]?\s*)(.+)$/iu);
   if (remember?.[1]) return { kind: "remember", rawContent: remember[1].trim() };
   const forget = trimmed.match(/^(?:olvida|borra\s+(?:esto\s+)?de\s+(?:tu\s+)?memoria)(?:\s+que)?\s+(.+)$/iu);
   if (forget?.[1]) return { kind: "forget", rawContent: forget[1].trim() };

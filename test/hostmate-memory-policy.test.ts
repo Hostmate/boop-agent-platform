@@ -14,7 +14,9 @@ describe("Hostmate policy boundary over Boop Memory", () => {
   it.each([
     ["Acuérdate de que prefiero respuestas detalladas.", "prefiero respuestas detalladas."],
     ["Quiero que de ahora en adelante uses formato 24h.", "uses formato 24h."],
+    ["Quiero que de ahora en adelante, uses formato 24h.", "uses formato 24h."],
     ["A partir de ahora prefiero los inmuebles más baratos primero.", "prefiero los inmuebles más baratos primero."],
+    ["A partir de ahora, muéstrame primero los inmuebles más baratos.", "muéstrame primero los inmuebles más baratos."],
     ["Siempre que busque inmuebles prefiero los inmuebles más baratos primero.", "prefiero los inmuebles más baratos primero."],
     ["Oye, acuérdate: quiero respuestas detalladas.", "quiero respuestas detalladas."],
     ["Recorda que prefereixo respostes breus.", "prefereixo respostes breus."],
