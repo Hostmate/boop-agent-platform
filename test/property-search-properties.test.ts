@@ -191,7 +191,8 @@ describe("Property Interaction → Execution", () => {
     const port: PropertySearchPort = { search: vi.fn(async () => serviceResult(2)) };
     const slice = new PropertySearchPropertiesVerticalSlice(repository, port, detailPort(), new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock, maxTransportRetries: 0 }), { model: "requested/model" });
     const turn = await slice.execute(actor(), { conversationId: "123e4567-e89b-42d3-a456-426614174100", message: "Busca pisos en Manresa" });
-    expect(turn.result).toMatchObject({ status: "completed", data: { appliedFilters: { city: "Manresa", propertyType: "piso" }, returned: 2 } });
+    expect(turn.result).toMatchObject({ status: "completed", data: { returned: 2 } });
+    expect((turn.result.data as PropertySearchPropertiesOutput).appliedFilters).toEqual({ city: "Manresa", propertyType: "piso" });
     expect(port.search).toHaveBeenCalledWith(expect.anything(), { city: "Manresa", propertyType: "piso" });
     const request = JSON.parse(String(fetchMock.mock.calls[0]![1]?.body));
     expect(request.tools).toHaveLength(1);

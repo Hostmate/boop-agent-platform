@@ -384,6 +384,10 @@ export class PropertySearchPropertiesVerticalSlice {
         metadata: { interaction_run_id: interactionRunId, execution_run_id: executionRunId, request_id: input.requestId ?? "unknown", profile: "property", plan: "search" },
         sessionId: actor.sessionId,
       });
+      // The tool wrapper receives model arguments, while the bound port executes
+      // only the grounded filters. Make the user-facing DTO report exactly the
+      // filters that reached the canonical Hostmate service.
+      if (output && sanitizedToolInput) output = { ...output, appliedFilters: sanitizedToolInput };
       if (!output) throw new OpenRouterRuntimeError("Model did not execute the scoped property search tool", "INVALID_TOOL_CALL", false);
       await this.repository.recordUsage(actor, {
         usageId: randomUUID(), runId: executionRunId, attemptId,
