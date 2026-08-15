@@ -288,9 +288,12 @@ export class PropertySearchPropertiesVerticalSlice {
     let detailOutput: PropertyGetPropertyOutput | undefined;
     let requestedToolInput: Record<string, unknown> | undefined;
     let sanitizedToolInput: PropertySearchFilters | undefined;
+    let preferenceApplicationLatencyMs = 0;
     const boundPort: PropertySearchPort = {
       search: (boundActor, modelInput) => {
+        const preferenceApplicationStartedAt = performance.now();
         sanitizedToolInput = bindPropertyFiltersToObjective(modelInput, message, this.config.weakPreference?.order);
+        preferenceApplicationLatencyMs = performance.now() - preferenceApplicationStartedAt;
         return this.propertySearch.search(boundActor, sanitizedToolInput);
       },
     };
@@ -373,7 +376,7 @@ export class PropertySearchPropertiesVerticalSlice {
         onToolUse: async (toolName, toolInput) => { requestedToolInput = toolInput as Record<string, unknown>; await event("tool.started", { toolName, inputRequested: toolInput }); },
         onToolResult: async (toolName) => await event("tool.completed", {
           toolName, service: "property.service.list", inputRequested: requestedToolInput, inputSanitized: sanitizedToolInput,
-          latencyMs: output?.telemetry?.latencyMs, resultCount: output?.returned, total: output?.total,
+          latencyMs: output?.telemetry?.latencyMs, preferenceApplicationLatencyMs, resultCount: output?.returned, total: output?.total,
           entityRefs: output?.matches.map((property) => property.ref),
         }),
       }, {

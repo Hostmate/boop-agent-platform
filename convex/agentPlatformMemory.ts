@@ -142,25 +142,32 @@ export const getByIds = query({
 
 export const vectorSearch = action({
   args: { embedding: v.array(v.float64()), limit: v.optional(v.number()), ...expectedActorArgs },
-  handler: async (ctx, args): Promise<Array<{ _id: Id<"memoryRecords">; score: number; record: Doc<"memoryRecords"> }>> => {
+  handler: async (ctx, args): Promise<{
+    hits: Array<{ _id: Id<"memoryRecords">; score: number; record: Doc<"memoryRecords"> }>;
+    telemetry: { vectorSearchMs: number; documentFetchMs: number };
+  }> => {
     const actor = await requireAgentPlatformActor(ctx, args);
     requireMemoryPermission(actor, "memory.read");
     const limit = Math.max(1, Math.min(args.limit ?? 10, 50));
     // Scope is part of Convex's ANN candidate filter. No foreign tenant/user
     // can enter top-K and there is no post-search authorization filter.
+    const vectorStartedAt = Date.now();
     const hits = await ctx.vectorSearch("memoryRecords", "by_embedding", {
       vector: args.embedding,
       limit,
       filter: (q) => q.eq("vectorScopeKey", vectorScopeKey(actor, "active")),
     });
+    const vectorSearchMs = Date.now() - vectorStartedAt;
+    const documentFetchStartedAt = Date.now();
     const records = await ctx.runQuery(api.agentPlatformMemory.getByIds, {
       ids: hits.map((hit) => hit._id), expectedTenantId: actor.tenantId, expectedUserId: actor.userId,
     });
     const byId = new Map(records.map((record) => [record._id, record]));
-    return hits.flatMap((hit) => {
+    const authorizedHits = hits.flatMap((hit) => {
       const record = byId.get(hit._id);
       return record ? [{ _id: hit._id, score: hit._score, record }] : [];
     });
+    return { hits: authorizedHits, telemetry: { vectorSearchMs, documentFetchMs: Date.now() - documentFetchStartedAt } };
   },
 });
 

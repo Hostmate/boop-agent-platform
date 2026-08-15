@@ -24,6 +24,7 @@ export type MemoryWriteResult = Readonly<{
   record: ScopedMemoryRecord;
   supersededMemoryIds: string[];
   embedding: EmbeddingResult | null;
+  timings: Readonly<{ embeddingMs: number; convexWriteMs: number }>;
 }>;
 
 export type PropertyOrderRecall = Readonly<{
@@ -33,6 +34,7 @@ export type PropertyOrderRecall = Readonly<{
   score?: number;
   embedding: EmbeddingResult | null;
   latencyMs: number;
+  timings: Readonly<{ embeddingMs: number; vectorSearchMs: number; documentFetchMs: number; markAccessedMs: number; totalMs: number }>;
 }>;
 
 function audit(actor: ActorContext) {
@@ -55,7 +57,10 @@ export class BoopScopedMemoryRepository {
   constructor(private readonly client: ConvexControlPlaneClient) {}
 
   async remember(actor: ActorContext, input: { candidate: MemoryCandidate; sourceRunId: string; conversationId: string }): Promise<MemoryWriteResult> {
+    const embeddingStartedAt = Date.now();
     const embedding = await embedWithMetadata(input.candidate.content);
+    const embeddingMs = Date.now() - embeddingStartedAt;
+    const convexWriteStartedAt = Date.now();
     const stored = await this.client.mutation<ScopedMemoryRecord & { supersededMemoryIds?: string[] }>("agentPlatformMemory:upsertExplicit", {
       memoryId: makeMemoryId(), content: input.candidate.content, scope: "user",
       category: input.candidate.category, preferenceKey: input.candidate.preferenceKey,
@@ -65,8 +70,9 @@ export class BoopScopedMemoryRepository {
       embedding: embedding?.vector, embeddingProvider: embedding?.provider,
       embeddingModel: embedding?.model, containsSensitiveData: false, ...audit(actor),
     });
+    const convexWriteMs = Date.now() - convexWriteStartedAt;
     const { supersededMemoryIds = [], ...record } = stored;
-    return { record, supersededMemoryIds, embedding };
+    return { record, supersededMemoryIds, embedding, timings: { embeddingMs, convexWriteMs } };
   }
 
   async forget(actor: ActorContext, input: { preferenceKey: string; sourceRunId: string; conversationId: string }) {
@@ -75,21 +81,31 @@ export class BoopScopedMemoryRepository {
 
   async recallPropertyOrder(actor: ActorContext, conversationId: string): Promise<PropertyOrderRecall | null> {
     const startedAt = Date.now();
+    const embeddingStartedAt = Date.now();
     const embedding = await embedWithMetadata("preferencia estable del usuario para ordenar resultados de inmuebles por precio o fecha");
+    const embeddingMs = Date.now() - embeddingStartedAt;
     if (embedding) {
-      const hits = await this.client.action<Array<{ score: number; record: ScopedMemoryRecord }>>("agentPlatformMemory:vectorSearch", {
+      const search = await this.client.action<{ hits: Array<{ score: number; record: ScopedMemoryRecord }>; telemetry: { vectorSearchMs: number; documentFetchMs: number } }>("agentPlatformMemory:vectorSearch", {
         embedding: embedding.vector, limit: 8, ...audit(actor),
       });
-      const hit = hits.find((candidate) => candidate.record.preferenceKey === "property_order" && orderFromContent(candidate.record));
+      const hit = search.hits.find((candidate) => candidate.record.preferenceKey === "property_order" && orderFromContent(candidate.record));
       if (hit) {
+        const markAccessedStartedAt = Date.now();
         await this.client.mutation("agentPlatformMemory:markAccessed", { memoryId: hit.record.memoryId, conversationId, ...audit(actor) });
-        return { record: hit.record, order: orderFromContent(hit.record)!, mode: "vector", score: hit.score, embedding, latencyMs: Date.now() - startedAt };
+        const markAccessedMs = Date.now() - markAccessedStartedAt;
+        const totalMs = Date.now() - startedAt;
+        return { record: hit.record, order: orderFromContent(hit.record)!, mode: "vector", score: hit.score, embedding, latencyMs: totalMs, timings: { embeddingMs, ...search.telemetry, markAccessedMs, totalMs } };
       }
     }
+    const documentFetchStartedAt = Date.now();
     const record = await this.client.query<ScopedMemoryRecord | null>("agentPlatformMemory:currentPreference", { preferenceKey: "property_order", ...audit(actor) });
+    const documentFetchMs = Date.now() - documentFetchStartedAt;
     const order = record ? orderFromContent(record) : null;
     if (!record || !order) return null;
+    const markAccessedStartedAt = Date.now();
     await this.client.mutation("agentPlatformMemory:markAccessed", { memoryId: record.memoryId, conversationId, ...audit(actor) });
-    return { record, order, mode: "scoped-index", embedding, latencyMs: Date.now() - startedAt };
+    const markAccessedMs = Date.now() - markAccessedStartedAt;
+    const totalMs = Date.now() - startedAt;
+    return { record, order, mode: "scoped-index", embedding, latencyMs: totalMs, timings: { embeddingMs, vectorSearchMs: 0, documentFetchMs, markAccessedMs, totalMs } };
   }
 }

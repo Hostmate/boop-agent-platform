@@ -88,12 +88,14 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
       && actor.permissions.includes("memory.read")
       && actor.permissions.includes("memory.write"),
     );
+    const classificationStartedAt = performance.now();
     const memoryCommand = classifyExplicitMemoryCommand(input.message);
+    const classificationMs = performance.now() - classificationStartedAt;
     if (memoryCommand) {
       if (!memoryAllowed) throw new Error("MEMORY_FORBIDDEN");
       return {
         ...await new ExplicitUserMemoryVerticalSlice(repository, new BoopScopedMemoryRepository(convex))
-          .execute(actor, { conversationId: input.conversationId, message: input.message, command: memoryCommand }),
+          .execute(actor, { conversationId: input.conversationId, message: input.message, command: memoryCommand, classificationMs }),
         controlPlaneWrites: convex.writeMetrics(),
       };
     }
@@ -111,7 +113,7 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
         { model: config.model, fallbackModels: config.fallbackModels, reasoningEffort: config.reasoningEffort, weakPreference },
       );
       const result = await slice.execute(actor, { ...input, requestId: context.requestId, abortController: context.abortController });
-      return { ...result, controlPlaneWrites: convex.writeMetrics() };
+      return { ...result, memoryTimings: weakPreference?.timings, controlPlaneWrites: convex.writeMetrics() };
     }
     const slice = new CrmSearchLeadsVerticalSlice(
       repository,

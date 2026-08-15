@@ -21,6 +21,7 @@ export type ExplicitMemoryTurnResult = Readonly<{
   executionRunId: string;
   result: ExecutionResult<ExplicitMemoryData>;
   embeddingUsage?: Readonly<{ requestedModel: string; resolvedModel: string; provider: string; inputTokens: number; costUsd: number; latencyMs: number }>;
+  memoryTimings: Readonly<{ classificationMs: number; policyMs: number; embeddingMs: number; convexWriteMs: number; totalMs: number }>;
 }>;
 
 function hash(value: string) { return createHash("sha256").update(value).digest("hex"); }
@@ -28,7 +29,7 @@ function hash(value: string) { return createHash("sha256").update(value).digest(
 export class ExplicitUserMemoryVerticalSlice {
   constructor(private readonly controlPlane: ControlPlaneRepository, private readonly memory: BoopScopedMemoryRepository) {}
 
-  async execute(actor: ActorContext, input: { conversationId: string; message: string; command: ExplicitMemoryCommand }): Promise<ExplicitMemoryTurnResult> {
+  async execute(actor: ActorContext, input: { conversationId: string; message: string; command: ExplicitMemoryCommand; classificationMs?: number }): Promise<ExplicitMemoryTurnResult> {
     const startedAt = Date.now();
     let priorMessages: readonly AgentMessageRecord[];
     try { priorMessages = await this.controlPlane.listMessages(actor, { conversationId: input.conversationId, limit: 200 }); }
@@ -67,8 +68,13 @@ export class ExplicitUserMemoryVerticalSlice {
 
     let result: ExecutionResult<ExplicitMemoryData>;
     let embeddingUsage: ExplicitMemoryTurnResult["embeddingUsage"];
+    let policyMs = 0;
+    let embeddingMs = 0;
+    let convexWriteMs = 0;
     if (input.command.kind === "remember") {
+      const policyStartedAt = Date.now();
       const decision = evaluateExplicitMemory(input.command.rawContent, "explicit_user");
+      policyMs = Date.now() - policyStartedAt;
       if (decision.decision === "reject") {
         await event("memory.rejected", { code: decision.code, sourceType: "explicit_user", scope: "user" });
         result = {
@@ -79,6 +85,8 @@ export class ExplicitUserMemoryVerticalSlice {
       } else {
         const embeddingStartedAt = Date.now();
         const written = await this.memory.remember(actor, { candidate: decision.candidate, sourceRunId: executionRunId, conversationId: input.conversationId });
+        embeddingMs = written.timings.embeddingMs;
+        convexWriteMs = written.timings.convexWriteMs;
         if (written.embedding) {
           embeddingUsage = {
             requestedModel: written.embedding.model, resolvedModel: written.embedding.model,
@@ -107,7 +115,9 @@ export class ExplicitUserMemoryVerticalSlice {
         };
       }
     } else {
+      const policyStartedAt = Date.now();
       const preferenceKey = preferenceKeyForForget(input.command.rawContent);
+      policyMs = Date.now() - policyStartedAt;
       if (!preferenceKey) {
         await event("memory.rejected", { code: "FORGET_TARGET_NOT_ALLOWLISTED", scope: "user" });
         result = {
@@ -137,6 +147,9 @@ export class ExplicitUserMemoryVerticalSlice {
       messageId: randomUUID(), conversationId: input.conversationId, role: "assistant", contentRedacted: result.summary,
       contextRefs: context, runId: executionRunId, sequence, createdAt: Date.now(),
     });
-    return { conversationId: input.conversationId, interactionRunId, executionRunId, result, embeddingUsage };
+    return {
+      conversationId: input.conversationId, interactionRunId, executionRunId, result, embeddingUsage,
+      memoryTimings: { classificationMs: input.classificationMs ?? 0, policyMs, embeddingMs, convexWriteMs, totalMs: Date.now() - startedAt },
+    };
   }
 }
