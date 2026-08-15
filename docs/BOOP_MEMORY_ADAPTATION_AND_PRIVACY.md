@@ -46,7 +46,7 @@ The personal-agent implementation assumes one trust domain. Its vector index ori
 | SaaS persistence adapter | `convex/agentPlatformMemory.ts` | actor-derived user scope, policy invariants, logical delete, scoped vector recall | EXTEND | Thin authenticated facade over `memoryRecords`; not a second store. |
 | Memory events | `convex/memoryEvents.ts` | original event log | KEEP | Original functions remain. Hostmate adds scoped metadata to the same table. |
 | Consolidation persistence | `convex/consolidation.ts` | consolidation run history | KEEP, gated | Preserved unchanged. |
-| Schema/indexes | `convex/schema.ts` | memory records, events and vector index | ADAPT | Adds optional SaaS metadata and scope-first vector filter fields. |
+| Schema/indexes | `convex/schema.ts` | memory records, events and vector index | ADAPT | Adds optional SaaS metadata and a composite scope-first vector key. |
 | MemoryPanel | `debug/src/components/MemoryPanel.tsx` | list, filters, detail, tiers, importance, access count, delete, graph | KEEP + frontend port | Original stays unchanged; Hostmate port keeps its information architecture. |
 | Memory Graph | `debug/src/components/MemoryGraphView.tsx`, `memoryGraphModel.ts` | deterministic graph topology and force rendering | ADAPT | Topology/placement/history are ported; taxonomy is limited to allowed Hostmate categories. |
 | Embedding status | `debug/src/components/EmbeddingBanner.tsx` | embedding health and re-embed control | ADAPT | Hostmate exposes status read-only; normal users cannot launch bulk jobs. |
@@ -268,7 +268,7 @@ The consolidation card communicates the preserved OFF state without exposing an 
 ### Memory Core modified
 
 - `server/embeddings.ts`: OpenRouter adapter plus usage metadata; vector dimension unchanged.
-- `convex/schema.ts`: optional SaaS metadata, owner indexes and scope-first vector filters.
+- `convex/schema.ts`: optional SaaS metadata, owner indexes and a lifecycle-aware composite `vectorScopeKey`; Convex ANN filters on that key before top-K.
 
 ### Boop Core reused without changes
 

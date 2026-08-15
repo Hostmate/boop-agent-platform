@@ -74,6 +74,7 @@ export default defineSchema({
     retentionPolicy: v.optional(v.string()),
     embeddingProvider: v.optional(v.string()),
     embeddingModel: v.optional(v.string()),
+    vectorScopeKey: v.optional(v.string()),
     deletedAt: v.optional(v.number()),
   })
     .index("by_memory_id", ["memoryId"])
@@ -85,7 +86,7 @@ export default defineSchema({
     .vectorIndex("by_embedding", {
       vectorField: "embedding",
       dimensions: 1024,
-      filterFields: ["tenantId", "ownerUserId", "scope", "lifecycle"],
+      filterFields: ["lifecycle", "vectorScopeKey"],
     }),
 
   executionAgents: defineTable({

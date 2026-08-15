@@ -21,6 +21,10 @@ function assertUserScope(scope: "user" | "tenant") {
   if (scope !== "user") throw new ConvexError("TENANT_MEMORY_DISABLED");
 }
 
+function vectorScopeKey(actor: ConvexActor, lifecycle: "active" | "archived" | "pruned") {
+  return `${actor.tenantId}:${actor.userId}:user:${lifecycle}`;
+}
+
 async function emit(ctx: MutationCtx, actor: ConvexActor, input: {
   eventType: string;
   memoryId?: string;
@@ -70,7 +74,9 @@ export const upsertExplicit = mutation({
     const previous = await ctx.db.query("memoryRecords")
       .withIndex("by_scope_preference_lifecycle", (q) => q.eq("tenantId", actor.tenantId).eq("ownerUserId", actor.userId).eq("scope", "user").eq("preferenceKey", args.preferenceKey).eq("lifecycle", "active"))
       .collect();
-    for (const row of previous) await ctx.db.patch(row._id, { lifecycle: "archived" });
+    for (const row of previous) await ctx.db.patch(row._id, {
+      lifecycle: "archived", vectorScopeKey: vectorScopeKey(actor, "archived"),
+    });
     const now = Date.now();
     const supersedes = previous.map((row) => row.memoryId);
     const id = await ctx.db.insert("memoryRecords", {
@@ -84,6 +90,7 @@ export const upsertExplicit = mutation({
       consentBasis: "explicit_request", containsSensitiveData: false,
       retentionPolicy: "user-controlled-v1", embeddingProvider: args.embeddingProvider,
       embeddingModel: args.embeddingModel,
+      vectorScopeKey: vectorScopeKey(actor, "active"),
     });
     await emit(ctx, actor, {
       eventType: previous.length ? "memory.superseded" : "memory.created",
@@ -144,7 +151,7 @@ export const vectorSearch = action({
     const hits = await ctx.vectorSearch("memoryRecords", "by_embedding", {
       vector: args.embedding,
       limit,
-      filter: (q) => q.eq("tenantId", actor.tenantId).eq("ownerUserId", actor.userId).eq("scope", "user").eq("lifecycle", "active"),
+      filter: (q) => q.eq("vectorScopeKey", vectorScopeKey(actor, "active")),
     });
     const records = await ctx.runQuery(api.agentPlatformMemory.getByIds, {
       ids: hits.map((hit) => hit._id), expectedTenantId: actor.tenantId, expectedUserId: actor.userId,
@@ -182,7 +189,9 @@ export const forgetPreference = mutation({
       .collect();
     const deletedAt = Date.now();
     for (const row of rows) {
-      await ctx.db.patch(row._id, { lifecycle: "pruned", deletedAt });
+      await ctx.db.patch(row._id, {
+        lifecycle: "pruned", deletedAt, vectorScopeKey: vectorScopeKey(actor, "pruned"),
+      });
       await emit(ctx, actor, { eventType: "memory.deleted", memoryId: row.memoryId, conversationId: args.conversationId, data: { category: row.category, preferenceKey: row.preferenceKey, sourceRunId: args.sourceRunId } });
     }
     return { deleted: rows.length, memoryIds: rows.map((row) => row.memoryId) };
@@ -198,7 +207,9 @@ export const deleteOwn = mutation({
       .withIndex("by_scope_lifecycle_created", (q) => q.eq("tenantId", actor.tenantId).eq("ownerUserId", actor.userId).eq("scope", "user").eq("lifecycle", "active"))
       .filter((q) => q.eq(q.field("memoryId"), args.memoryId)).unique();
     if (!row) return false;
-    await ctx.db.patch(row._id, { lifecycle: "pruned", deletedAt: Date.now() });
+    await ctx.db.patch(row._id, {
+      lifecycle: "pruned", deletedAt: Date.now(), vectorScopeKey: vectorScopeKey(actor, "pruned"),
+    });
     await emit(ctx, actor, { eventType: "memory.deleted", memoryId: row.memoryId, data: { category: row.category, preferenceKey: row.preferenceKey, source: "memory_ui" } });
     return true;
   },
