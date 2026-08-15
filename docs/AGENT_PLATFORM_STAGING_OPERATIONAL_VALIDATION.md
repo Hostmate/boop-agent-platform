@@ -1,19 +1,19 @@
 # Agent Platform — Staging Operational Validation
 
-Fecha de ejecución: 2026-08-15. Resultado técnico: **ADJUST**. La infraestructura y el vertical slice desplegado pasan; queda pendiente certificar el smoke autenticado completo en una superficie de navegador controlable.
+Fecha de ejecución: 2026-08-15. Resultado técnico: **GO para uso interno en staging**. Infraestructura, seguridad, vertical slice y browser smoke autenticado quedan certificados. Producción sigue fuera de alcance y no fue modificada.
 
 ## 1. Estado inicial
 
-- Boop: `codex/agent-platform-integration` en `3e8f3cc663934bba37a780bbe07436fdad60bde1`, limpio, `origin/main...HEAD = 0/7`.
-- Hostmate: `codex/agent-platform-integration` en `68f107d25820bbb9d860d93cbfe74b3a75f37e8d`, limpio, `origin/main...HEAD = 0/7`.
+- Boop: `codex/agent-platform-integration` en `f5f77c3d33a79329c21d630949a343bb2c66907c`, `origin/main...HEAD = 0/10` antes de añadir esta certificación.
+- Hostmate: `codex/agent-platform-integration` en `7836efbd33b172fa7cd3ee4db4f7d9f3b46b3ce9`, limpio, `origin/main...HEAD = 0/11`.
 - Boop `origin` apunta al fork Hostmate y `upstream` a `raroque/boop-agent`; Hostmate `origin` apunta a `Hostmate/Plataforma-Real-Estate`.
 - No se actualizó Boop upstream ni se modificó `main`.
 - El antiguo `it_re-v2-dev` estaba a `0/0`. `realestate_dev` no contenía el esquema de aplicación; se eligió la base existente `realestate_staging` sin modificar `realestate_dev`.
 
 ## 2. Infraestructura desplegada
 
-- Hostmate API/Web: servicio Swarm `it_re-v2-dev`, imagen local de staging `hostmate/re-v2-agent-platform-staging:gate-20260815`, `1/1`.
-- Runtime: `it_re-agent-platform-runtime-staging`, imagen `hostmate/agent-platform-runtime-staging:gate-20260815`, `1/1`.
+- Hostmate API/Web: servicio Swarm `it_re-v2-dev`, imagen local de staging `hostmate/re-v2-agent-platform-staging:deeplink-fix-20260815`, `1/1`.
+- Runtime: `it_re-agent-platform-runtime-staging`, imagen `hostmate/agent-platform-runtime-staging:deeplink-fix-20260815`, `1/1`.
 - Convex: proyecto `r-closas/hostmate-agent-platform-staging`, deployment `different-mockingbird-928` en Europa (Irlanda).
 - MySQL: `realestate_staging`, usuario técnico exclusivo de staging.
 - Secretos: keyring RSA y OpenRouter montados como Docker secrets versionados. No están en Git, Convex, frontend, logs ni este documento.
@@ -116,11 +116,15 @@ Tenant 16 quedó finalmente con `agent_platform_enabled=0`. Su usuario pudo inic
 
 ## 12. Browser smoke
 
-- Login real como Agent A: correcto.
-- La SPA autenticada solicitó correctamente `/agent-platform/config` y `/agent-platform/token`.
-- El flujo equivalente desplegado por HTTP/Convex completó búsqueda → contexto → visitas → selección → detalle y persistió contextRefs.
-- **No certificado visualmente:** al entrar en el área autenticada, tanto Chrome controlado como el navegador integrado agotaron el tiempo del canal de control. No fue posible verificar de forma fiable navegación, refresh entre pasos, cards, deep links, executions ni responsive desde el navegador.
-- Por este motivo el gate es `ADJUST`, aunque el backend desplegado y el control plane pasen. Se requiere repetir el escenario completo con una superficie de navegador estable o manualmente con evidencia.
+- Login real como Agent A y bootstrap `/auth/me`: 200.
+- Overview, AI Chat y Executions renderizan como SPA real. `/agent-platform/config` y dos renovaciones `/agent-platform/token` respondieron 200; Convex abrió `wss://different-mockingbird-928.eu-west-1.convex.cloud/api/1.42.1/sync`.
+- Flujo visual completo: búsqueda de Lead A → contexto por pronombre → listado de visitas → selección → detalle → follow-up “Cuéntame más.”. Las cards mostraron únicamente lead 4995 y visita 458 con datos enmascarados.
+- Refresh entre detalle y follow-up conservó conversación, lead y visita seleccionados; el nuevo detalle usó `visits.get_visit.v1` con 0 inferencias.
+- Búsqueda visual de Lead B 4996 devolvió “No he encontrado leads con esos criterios” y no renderizó su card.
+- Executions mostró Interaction Runs, Execution Runs, scopes exactos, lifecycle, provider/model, tokens, coste y caminos de 0 inferencias.
+- Deep links certificados: lead → `/conversations?leadId=4995`, con conversación y ficha accesibles al comercial; visita → `/visits?visitId=458`, con el detalle abierto en calendario.
+- Responsive certificado a 390×844: `scrollWidth=390` en Chat y Executions; select, envío y deep-link miden 44 px de alto.
+- Captura CDP limpia posterior al fix: 0 `Network.loadingFailed`, 0 `Runtime.exceptionThrown`, bootstrap y assets 200.
 
 ## 13. Permission smoke
 
@@ -143,7 +147,7 @@ Admin tenant A pudo leer leads 4995 y 4996, pero obtuvo 404 para 4997. No se ace
 - ContextRefs persistieron lead 4995 y visita 458 a lo largo de la conversación.
 - Cliente reconectado y consulta después de restart recuperaron el estado durable.
 - Actor tenant B no pudo leer la conversación tenant A.
-- Falta únicamente la evidencia visual simultánea en `/ai-platform/executions` por el blocker de navegador de la sección 12.
+- Evidencia visual simultánea: el run `b5cc6980-edcd-4cbb-a4aa-d79156fb2036` apareció `running` a los ~850 ms y cambió a `completed` a los ~4.05 s en una pestaña Executions ya abierta, sin reload.
 
 ## 15. Restart/shutdown
 
@@ -208,15 +212,17 @@ La respuesta incluye tenant/tipo/count/oldest/newest/estimatedBytes. No ejecuta 
 - Carga concurrente aceptada: aproximadamente 3.3–3.5 s en la primera ráfaga; rechazos por capacidad en ~0.65 s.
 - Restart con request activa: 2.651 s y resultado 200.
 - No se definieron todavía SLOs de producción.
+- La SPA no mostró bloqueo de CPU: tras cargar una conversación larga, `ScriptDuration=0.283 s`, `TaskDuration=0.463 s`, 7 layouts y 7 recalculados; heap 21.54/26.82 MB.
+- El bundle principal cacheado cargó en 36.1 ms (`transferSize=0`). El warning de 5.22 MB/1.41 MB gzip permanece como deuda de code-splitting, no como causa del freeze observado.
 
 ## 22. Tests
 
 - Convex deploy con typecheck y schema: PASS.
-- Boop: typecheck PASS, bundle slim PASS, 20 archivos/121 tests PASS.
+- Boop: typecheck PASS, bundle slim PASS, 20 archivos/122 tests PASS.
 - Hostmate API: typecheck PASS, 145 archivos/1,226 tests PASS; 12 archivos/44 tests de integración condicionados por entorno quedaron skipped.
-- Hostmate Web: typecheck/lint PASS y build Vite PASS (1,998 módulos). Se mantiene el warning heredado de chunk principal de 5.22 MB/1.41 MB gzip.
+- Hostmate Web: 33 archivos/160 tests PASS, typecheck/lint PASS y build Vite PASS (1,999 módulos). Se mantiene el warning heredado de chunk principal de 5.22 MB/1.41 MB gzip.
 - Pruebas reales: cuatro capabilities, OpenRouter, auth, revocación, tenant isolation, realtime, restart, concurrencia, retention y health: PASS.
-- Browser UI completo: BLOCKED/NO CERTIFICADO.
+- Browser UI completo: PASS/CERTIFICADO.
 
 ## 23. Security findings
 
@@ -235,23 +241,22 @@ Resueltos durante el gate:
 2. permisos del secret para usuario no-root;
 3. EasyPanel mantenía el dominio dev en su página “not started”;
 4. Hostmate no reenviaba `Retry-After` del runtime.
-
-Pendiente: el controlador de navegador queda sin respuesta al inspeccionar la SPA autenticada, impidiendo certificar el smoke visual.
+5. consulta browser de una conversación aún no creada usaba el contrato estricto del runtime y devolvía `CONVERSATION_FORBIDDEN`; se separó `listMessagesIfPresent` para UI manteniendo el contrato estricto del runtime;
+6. `useEffect` devolvía implícitamente el valor de `scrollIntoView`; el controlador lo instrumenta como Promise y React intentaba ejecutarlo como cleanup (`TypeError: F is not a function`), dejando la SPA en blanco;
+7. lead deep link apuntaba a la ruta admin `/leads`; ahora usa `/conversations?leadId=` y la selección explícita sobrevive aunque el lead no esté en el listado activo.
 
 ## 25. Blockers
 
-- Repetir y evidenciar el browser smoke completo, incluyendo refresh entre pasos, executions, events/usage, deep links, reconnect y responsive.
-- Determinar si el bloqueo pertenece al controlador de navegador o al rendimiento/runtime del bundle autenticado; la API y las peticiones de bootstrap de la SPA sí responden.
-- Publicar imágenes staging en un registry con digest inmutable; actualmente son imágenes locales en un Swarm de un nodo.
-- Integrar la ruta staging en la configuración gestionada de EasyPanel para evitar depender del override de archivo.
+- **Uso interno en staging:** ninguno.
+- Antes de producción: publicar imágenes en un registry con digest inmutable e integrar la ruta staging en la configuración gestionada de EasyPanel. Son deudas operativas, no bloquean el uso interno del staging actual de un nodo.
 
 ## 26. GO/NO-GO staging
 
-**ADJUST.** El backend técnico desplegado, seguridad, aislamiento, control plane y operación pasan. No se autoriza uso interno hasta cerrar el smoke browser obligatorio. No se autoriza producción.
+**GO para uso interno en staging.** Backend, seguridad, aislamiento, realtime, control plane y UX browser pasan. No autoriza producción ni merge a `main`.
 
 ## 27. Blockers production
 
-- Todos los blockers de la sección 25.
+- Registry/digest inmutable y configuración gestionada de ingress indicados en la sección 25.
 - Runbook de rotación/rollback de JWKS y secretos respaldado por KMS o secret manager administrado.
 - Pipeline reproducible con registry/digest, SBOM y escaneo del artifact final.
 - SLOs, alertas, dashboards, presupuesto/coste, capacity planning y pruebas de fallo más amplias.
@@ -261,4 +266,41 @@ Pendiente: el controlador de navegador queda sin respuesta al inspeccionar la SP
 
 ## 28. Recomendación
 
-No comenzar Properties todavía. Primero cerrar el blocker de browser smoke y obtener GO explícito del gate de staging. Después de ese GO, Properties puede planificarse como revisión separada; no debe implementarse automáticamente.
+El gate permite preparar Properties, pero únicamente después de una revisión separada de alcance, permisos, contratos read-only, UX y riesgo. No comenzar su implementación automáticamente ni mezclarla con este cierre.
+
+## 29. Browser Smoke Certification
+
+### Método
+
+Navegador integrado autenticado con Agent A real, dos pestañas simultáneas para Chat/Executions, snapshots semánticos del DOM, screenshots, viewport explícito 390×844 y CDP para red, WebSocket, excepciones y métricas. No se usaron respuestas simuladas.
+
+### Resultado por paso
+
+| Paso | Evidencia | Resultado |
+|---|---|---|
+| Login y acceso | `/auth/me`, config y token 200 | PASS |
+| Búsqueda Lead A | card 4995, run `bbb05036…` | PASS |
+| Contexto “¿Qué sabemos de él?” | `crm.get_lead_context.v1`, run `592a10e3…` | PASS |
+| Visitas | única visita 458, run `c7e86d72…` | PASS |
+| Selección/detalle | `visits.get_visit.v1`, run `e80b8702…` | PASS |
+| Refresh/continuidad | visita 458 recuperada, run `bfcb8769…`, 0 inferencias | PASS |
+| Permisos visuales | Lead B 4996 no aparece | PASS |
+| Realtime | `running → completed` sin reload | PASS |
+| Executions | scope, events, usage, modelo y coste visibles | PASS |
+| Deep links | CRM lead y calendario visita correctos | PASS |
+| Responsive | Chat/Executions 390×844, sin overflow | PASS |
+| Consola/red | 0 exceptions/failures; Convex WebSocket creado | PASS |
+
+### Evidencia persistente
+
+- `docs/evidence/agent-platform-browser-smoke/01-search-lead-desktop.jpg`
+- `docs/evidence/agent-platform-browser-smoke/02-four-capability-flow-desktop.jpg`
+- `docs/evidence/agent-platform-browser-smoke/03-agent-scope-no-leak.jpg`
+- `docs/evidence/agent-platform-browser-smoke/04-execution-trace-desktop.jpg`
+- `docs/evidence/agent-platform-browser-smoke/05-chat-mobile.jpg`
+- `docs/evidence/agent-platform-browser-smoke/06-executions-mobile.png`
+- `docs/evidence/agent-platform-browser-smoke/07-lead-deeplink-crm.jpg`
+- `docs/evidence/agent-platform-browser-smoke/08-visit-deeplink-calendar.jpg`
+- `docs/evidence/agent-platform-browser-smoke/browser-smoke-evidence.json`
+
+Conclusión: **GO para uso interno en staging**. La causa primaria del freeze era una violación del contrato de cleanup de React activada por la instrumentación del controlador; no era saturación de runtime ni del bundle. Las dos incidencias SPA adicionales detectadas —consulta pre-conversación y deep link del comercial— quedaron corregidas y cubiertas por regresión.

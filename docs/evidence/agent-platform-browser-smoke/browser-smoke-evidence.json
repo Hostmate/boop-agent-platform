@@ -1,0 +1,60 @@
+{
+  "capturedAt": "2026-08-15T14:32:00Z",
+  "environment": "https://v2-dev.realestate.hostmate.es",
+  "actor": { "tenantId": 15, "userId": 43, "role": "agent" },
+  "commits": {
+    "boop": "f5f77c3d33a79329c21d630949a343bb2c66907c",
+    "hostmate": "7836efbd33b172fa7cd3ee4db4f7d9f3b46b3ce9"
+  },
+  "services": {
+    "hostmate": "hostmate/re-v2-agent-platform-staging:deeplink-fix-20260815",
+    "runtime": "hostmate/agent-platform-runtime-staging:deeplink-fix-20260815"
+  },
+  "flow": [
+    { "step": "search", "runId": "bbb05036-0257-45d1-81b4-024f10f00a30", "tool": "crm.search_leads.v1", "inferenceCount": 1 },
+    { "step": "context", "runId": "592a10e3-93c7-49ea-9e1d-f80f12fff1f4", "tool": "crm.get_lead_context.v1", "inferenceCount": 0 },
+    { "step": "visit-list", "runId": "c7e86d72-f901-4356-b75a-fc43ebfff395", "tool": "visits.list_lead_visits.v1", "inferenceCount": 0 },
+    { "step": "visit-detail", "runId": "e80b8702-814e-4da9-bc83-4db6882162ef", "tool": "visits.get_visit.v1", "inferenceCount": 0 },
+    { "step": "post-refresh-detail", "runId": "bfcb8769-e4ad-489d-a080-6bed95aea288", "tool": "visits.get_visit.v1", "inferenceCount": 0 }
+  ],
+  "realtime": {
+    "runId": "b5cc6980-edcd-4cbb-a4aa-d79156fb2036",
+    "observed": ["running", "completed"],
+    "withoutReload": true
+  },
+  "permissions": {
+    "visibleLeadId": 4995,
+    "hiddenLeadId": 4996,
+    "hiddenLeadVisualResult": "No he encontrado leads con esos criterios."
+  },
+  "network": {
+    "authMe": 200,
+    "agentPlatformConfig": 200,
+    "agentPlatformToken": [200, 200],
+    "convexWebSocketCreated": true,
+    "loadingFailures": 0,
+    "runtimeExceptions": 0
+  },
+  "performance": {
+    "jsHeapUsedBytes": 21544972,
+    "jsHeapTotalBytes": 26820608,
+    "nodes": 1636,
+    "eventListeners": 801,
+    "layoutCount": 7,
+    "recalcStyleCount": 7,
+    "scriptDurationSeconds": 0.282807,
+    "taskDurationSeconds": 0.462731,
+    "cachedMainBundleLoadMs": 36.1
+  },
+  "responsive": {
+    "width": 390,
+    "height": 844,
+    "chatScrollWidth": 390,
+    "executionsScrollWidth": 390,
+    "primaryTouchTargetsPx": 44
+  },
+  "deepLinks": {
+    "lead": "/conversations?leadId=4995",
+    "visit": "/visits?visitId=458"
+  }
+}
