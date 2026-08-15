@@ -70,7 +70,7 @@ export function createPropertyGetPropertyTool(input: {
     version: PROPERTY_GET_PROPERTY_TOOL_VERSION,
     description: "Obtiene el detalle público y comercial permitido de un inmueble mediante un EntityRef autorizado. Solo lectura.",
     ownerDomain: "property",
-    compatibleProfiles: ["property"],
+    compatibleProfiles: ["property", "visits"],
     capabilities: ["property.property.read"],
     mode: "read",
     risk: "R0",

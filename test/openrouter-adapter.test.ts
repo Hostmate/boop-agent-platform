@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { OpenRouterAdapter, OpenRouterRuntimeError } from "../server/hostmate/runtime/openrouter-adapter.js";
+import { OpenRouterAdapter, OpenRouterRuntimeError, type OpenRouterObservation } from "../server/hostmate/runtime/openrouter-adapter.js";
 import { defineRuntimeTool } from "../server/runtimes/tool.js";
 
 function sse(events: unknown[]): Response {
@@ -83,6 +83,24 @@ describe("production-oriented OpenRouterAdapter", () => {
     const error = await adapter.run({ prompt: "x", systemPrompt: "x", model: "configured/model", mode: "execution", tools: [] }, { budget }).catch((value) => value);
     expect(error).toBeInstanceOf(OpenRouterRuntimeError);
     expect(error).toMatchObject({ code: "PROVIDER_UNAVAILABLE", retryable: true, status: 503 });
+  });
+
+  it("classifies connect, provider and cancellation observations without changing retry policy", async () => {
+    const connect: OpenRouterObservation[] = [];
+    const connectAdapter = new OpenRouterAdapter({
+      apiKey: "test", maxTransportRetries: 0, onObservation: (row) => connect.push(row),
+      fetch: vi.fn(async (_url, init) => await new Promise<Response>((_resolve, reject) => {
+        if (init?.signal?.aborted) return reject(new DOMException("aborted", "AbortError"));
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+      })),
+    });
+    await expect(connectAdapter.run({ prompt: "x", systemPrompt: "x", model: "configured/model", mode: "execution", tools: [] }, { budget: { timeoutMs: 5, maxToolRounds: 0 } })).rejects.toMatchObject({ code: "TIMEOUT", details: { phase: "connect", timeoutKind: "connect" } });
+    expect(connect[0]).toMatchObject({ operation: "chat.completions", outcome: "timeout", phase: "connect", timeoutKind: "connect", attempts: 1 });
+
+    const provider: OpenRouterObservation[] = [];
+    const providerAdapter = new OpenRouterAdapter({ apiKey: "test", maxTransportRetries: 0, onObservation: (row) => provider.push(row), fetch: vi.fn(async () => new Response("timeout", { status: 504 })) });
+    await expect(providerAdapter.run({ prompt: "x", systemPrompt: "x", model: "configured/model", mode: "execution", tools: [] }, { budget })).rejects.toMatchObject({ code: "PROVIDER_UNAVAILABLE", status: 504, details: { phase: "provider", timeoutKind: "provider" } });
+    expect(provider[0]).toMatchObject({ outcome: "error", phase: "provider", timeoutKind: "provider", status: 504 });
   });
 
   it("rejects invalid tool arguments before the handler", async () => {

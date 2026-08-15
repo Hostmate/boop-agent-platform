@@ -56,6 +56,7 @@ export type CreateRunInput = Readonly<{
   dependencyRunIds: readonly string[];
   registryHash: string;
   skillVersions: Readonly<Record<string, number>>;
+  skillRefs?: readonly Readonly<{ id: string; version: number; hash: string; sourcePath: string }> [];
   toolScope: readonly string[];
   requestedModel?: string;
   visibility: "user" | "tenant_admin" | "platform_admin";

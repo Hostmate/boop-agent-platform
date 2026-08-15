@@ -143,7 +143,7 @@ export function createCrmGetLeadContextTool(input: {
     version: CRM_GET_LEAD_CONTEXT_TOOL_VERSION,
     description: "Obtiene un resumen CRM acotado de un lead ya resuelto mediante EntityRef. Solo lectura.",
     ownerDomain: "crm",
-    compatibleProfiles: ["crm"],
+    compatibleProfiles: ["crm", "visits"],
     capabilities: ["crm.lead.context"],
     mode: "read",
     risk: "R0",

@@ -50,6 +50,7 @@ export class ConvexControlPlaneRepository implements ControlPlaneRepository {
       ...input,
       dependencyRunIds: [...input.dependencyRunIds],
       skillVersions: { ...input.skillVersions },
+      skillRefs: input.skillRefs ? input.skillRefs.map((skill) => ({ ...skill })) : undefined,
       toolScope: [...input.toolScope],
       ...this.audit(actor),
     });

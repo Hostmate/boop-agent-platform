@@ -75,8 +75,8 @@ export const FOUNDATION_PROFILES: Readonly<Record<ExecutionProfileId, ExecutionP
     id: "visits", version: 1, responsibility: "Availability, routing and visit lifecycle.",
     boundaries: ["Never invents a slot and never sends a client message directly."],
     compatibleToolBundles: ["visits.read", "visits.internal-write"],
-    compatibleSkillIds: ["prepare-property-visit", "reschedule-visit-safely"],
-    objectiveClasses: ["visit.lookup", "visit.availability", "visit.create", "visit.update"], limits: STANDARD_LIMITS,
+    compatibleSkillIds: ["prepare-property-visit", "reschedule-visit-safely", "prepare-visit-brief"],
+    objectiveClasses: ["visit.lookup", "visit.availability", "visit.create", "visit.update", "visit.prepare_brief"], limits: STANDARD_LIMITS,
     writePolicy: { enabled: true, maxRisk: "R2", requirePreconditions: true }, modelRoute: "balanced",
   }),
   communications: profile({

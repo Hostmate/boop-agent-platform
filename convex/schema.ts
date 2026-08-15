@@ -185,7 +185,16 @@ export default defineSchema({
   })
     .index("by_conversation", ["conversationId"])
     .index("by_type", ["eventType"])
-    .index("by_scope_created", ["tenantId", "ownerUserId", "scope", "createdAt"]),
+    .index("by_scope_created", ["tenantId", "ownerUserId", "scope", "createdAt"])
+    .index("by_scope_type_created", ["tenantId", "ownerUserId", "scope", "eventType", "createdAt"]),
+
+  memoryPurgePlans: defineTable({
+    target: v.union(v.literal("memoryRecords"), v.literal("memoryEvents")),
+    tenantId: v.string(), ownerUserId: v.string(), scope: v.literal("user"),
+    lifecycle: v.optional(v.union(v.literal("active"), v.literal("archived"), v.literal("pruned"))),
+    eventType: v.optional(v.string()), before: v.number(), limit: v.number(), matched: v.number(),
+    withEmbedding: v.optional(v.number()), createdBy: v.string(), createdAt: v.number(), expiresAt: v.number(), consumedAt: v.optional(v.number()),
+  }).index("by_expiry", ["expiresAt"]),
 
   automations: defineTable({
     automationId: v.string(),
@@ -294,7 +303,7 @@ export default defineSchema({
     kind: v.union(v.literal("interaction"), v.literal("execution")), profileId: v.optional(v.string()), profileVersion: v.optional(v.number()),
     parentRunId: v.optional(v.string()), dependencyRunIds: v.array(v.string()),
     status: v.union(v.literal("queued"), v.literal("waiting_dependency"), v.literal("resolving_scope"), v.literal("running"), v.literal("awaiting_confirmation"), v.literal("completed"), v.literal("partial"), v.literal("failed"), v.literal("cancelled"), v.literal("timeout")),
-    objectiveHash: v.string(), objectiveRedacted: v.optional(v.string()), registryHash: v.string(), skillVersions: v.any(), toolScope: v.array(v.string()),
+    objectiveHash: v.string(), objectiveRedacted: v.optional(v.string()), registryHash: v.string(), skillVersions: v.any(), skillRefs: v.optional(v.any()), toolScope: v.array(v.string()),
     requestedModel: v.optional(v.string()), resolvedModel: v.optional(v.string()), provider: v.optional(v.string()), finishReason: v.optional(v.string()),
     visibility: v.union(v.literal("user"), v.literal("tenant_admin"), v.literal("platform_admin")),
     resultSummary: v.optional(v.string()), errorCode: v.optional(v.string()), cancelRequestedAt: v.optional(v.number()),

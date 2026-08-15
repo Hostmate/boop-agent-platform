@@ -5,6 +5,17 @@ function normalized(value: string): string {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
+export function isPrepareVisitBriefIntent(message: string): boolean {
+  const value = normalized(message);
+  // Skill IDs and imperative prompt-injection language are not a user-facing
+  // selection API. Activation requires an ordinary visit-preparation intent.
+  if (/\bprepare visit brief\b/.test(value) && !/\b(prepara|preparame|preparar|resume|resumen|briefing|dossier)\b/.test(value)) return false;
+  if (/\b(automatizacion|automatitzacio|automation|campana|workflow)\b/.test(value)) return false;
+  const preparation = /\b(prepara|preparame|prepararme|preparala|preparar|preparacio|preparacion|briefing|dossier|resumen operativo|ficha de preparacion)\b/.test(value);
+  const visit = /\b(visita|visites)\b/.test(value);
+  return preparation && visit;
+}
+
 function latestSelectedProperty(messages: readonly AgentMessageRecord[]): EntityRef | undefined {
   for (const message of [...messages].reverse()) {
     const ref = message.contextRefs?.selected.property;

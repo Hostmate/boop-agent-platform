@@ -126,7 +126,7 @@ export const createRun = mutation({
   args: {
     runId: v.string(), conversationId: v.optional(v.string()), kind: v.union(v.literal("interaction"), v.literal("execution")),
     profileId: v.optional(v.string()), profileVersion: v.optional(v.number()), objectiveHash: v.string(), objectiveRedacted: v.optional(v.string()), parentRunId: v.optional(v.string()),
-    dependencyRunIds: v.array(v.string()), registryHash: v.string(), skillVersions: v.any(), toolScope: v.array(v.string()),
+    dependencyRunIds: v.array(v.string()), registryHash: v.string(), skillVersions: v.any(), skillRefs: v.optional(v.any()), toolScope: v.array(v.string()),
     requestedModel: v.optional(v.string()), visibility: v.union(v.literal("user"), v.literal("tenant_admin"), v.literal("platform_admin")),
     ...expectedActorArgs,
   },

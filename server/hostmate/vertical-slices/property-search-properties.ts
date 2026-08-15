@@ -306,7 +306,7 @@ export class PropertySearchPropertiesVerticalSlice {
       actor, allowedToolIds, featureEnabled: (toolId) => allowedToolIds.includes(toolId),
       request: {
         profileId: "property", objective: message, objectiveClasses: composed ? ["property.search", "property.lookup"] : ["property.search"], objectiveCapabilities,
-        inputRefs: [], dependencyRunIds: [], skillHints: [], constraints: { readOnly: true, maxResults: 6 },
+        inputRefs: [], dependencyRunIds: [], internalSkillHints: [], constraints: { readOnly: true, maxResults: 6 },
       },
     });
     const toolScope = dispatch.toolResolution.tools.map((tool) => `${tool.toolId}@${tool.version}`);
@@ -466,7 +466,7 @@ export class PropertySearchPropertiesVerticalSlice {
       actor, allowedToolIds: [PROPERTY_GET_PROPERTY_TOOL_ID], featureEnabled: (toolId) => toolId === PROPERTY_GET_PROPERTY_TOOL_ID,
       request: {
         profileId: "property", objective: message, objectiveClasses: ["property.lookup"], objectiveCapabilities: ["property.property.read"],
-        inputRefs: [detailRef], dependencyRunIds: [], skillHints: [], constraints: { readOnly: true, maxResults: 1 },
+        inputRefs: [detailRef], dependencyRunIds: [], internalSkillHints: [], constraints: { readOnly: true, maxResults: 1 },
       },
     });
     const toolScope = dispatch.toolResolution.tools.map((tool) => `${tool.toolId}@${tool.version}`);

@@ -4,12 +4,14 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json ./
 COPY server ./server
+COPY .agents ./.agents
 RUN npm run build:hostmate-runtime
 
 FROM node:20-alpine
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=builder /src/dist-hostmate-runtime/start.mjs ./start.mjs
+COPY --from=builder /src/.agents ./.agents
 USER node
 EXPOSE 4310
 CMD ["node", "start.mjs"]

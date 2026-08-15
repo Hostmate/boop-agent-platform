@@ -376,7 +376,7 @@ export class CrmSearchLeadsVerticalSlice {
       request: {
         profileId: "crm", objective: message, objectiveClasses: ["lead.lookup"], objectiveCapabilities: capabilities,
         inputRefs: [conversationContext.selected.lead, conversationContext.selected.visit].filter((ref): ref is EntityRef => Boolean(ref)),
-        dependencyRunIds: [], skillHints: plan === "context" || plan === "visits" || plan === "detail" || plan === "visits+detail" ? [] : ["resolve-ambiguous-lead"],
+        dependencyRunIds: [], internalSkillHints: plan === "context" || plan === "visits" || plan === "detail" || plan === "visits+detail" ? [] : ["resolve-ambiguous-lead"],
         constraints: { readOnly: true, maxResults: 10 },
       },
     });

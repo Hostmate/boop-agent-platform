@@ -90,17 +90,17 @@ describe("Hostmate foundation contracts", () => {
   it("never loads a skill by expanding missing tool capabilities", () => {
     const skills = new SkillRegistry();
     expect(skills.resolve({
-      profileId: "crm",
-      objectiveClasses: ["lead.lookup"],
+      profileId: "visits", eligibleSkillIds: ["prepare-visit-brief"],
+      objectiveClasses: ["visit.prepare_brief"],
       availableToolCapabilities: [],
-      actor: actor(),
+      actor: actor(), featureEnabled: () => true,
     })).toEqual([]);
     expect(skills.resolve({
-      profileId: "crm",
-      objectiveClasses: ["lead.lookup"],
-      availableToolCapabilities: ["crm.lead.search"],
-      actor: actor(),
-    }).map((skill) => skill.id)).toEqual(["resolve-ambiguous-lead"]);
+      profileId: "visits", eligibleSkillIds: ["prepare-visit-brief"],
+      objectiveClasses: ["visit.prepare_brief"],
+      availableToolCapabilities: ["visits.visit.detail", "crm.lead.context", "property.property.read"],
+      actor: actor(), featureEnabled: () => true,
+    }).map((skill) => skill.id)).toEqual(["prepare-visit-brief"]);
   });
 
   it("characterizes Interaction-to-Execution dispatch as a reducer-only boundary", () => {
@@ -117,7 +117,7 @@ describe("Hostmate foundation contracts", () => {
       request: {
         profileId: "crm", objective: "Busca a Juan", objectiveClasses: ["lead.lookup"],
         objectiveCapabilities: ["crm.lead.search"], inputRefs: [], dependencyRunIds: [],
-        skillHints: ["resolve-ambiguous-lead"], constraints: { readOnly: true },
+        internalSkillHints: ["resolve-ambiguous-lead"], constraints: { readOnly: true },
       },
     });
     expect(dispatch.toolResolution.tools).toEqual([]);

@@ -29,6 +29,7 @@ export type ExecutionRunRecord = Readonly<{
   objectiveRedacted?: string;
   registryHash: string;
   skillVersions: Readonly<Record<string, number>>;
+  skillRefs?: readonly Readonly<{ id: string; version: number; hash: string; sourcePath: string }> [];
   toolScope: readonly string[];
   requestedModel?: string;
   resolvedModel?: string;

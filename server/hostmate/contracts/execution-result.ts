@@ -31,9 +31,22 @@ export type EntityDetailBlock = Readonly<{
   actions?: readonly Readonly<{ label: string; href: string }>[];
 }>;
 
-export type AgentContentBlock = EntityListBlock | EntityDetailBlock;
+export type BriefBlock = Readonly<{
+  type: "brief";
+  title: string;
+  status: "complete" | "partial";
+  sections: readonly Readonly<{
+    key: "visit" | "lead" | "property" | "preparation";
+    title: string;
+    availability: "available" | "unavailable";
+    fields: readonly Readonly<{ label: string; value: string }>[];
+    notes?: readonly string[];
+  }>[];
+}>;
 
-export type ExecutionResultStatus = "completed" | "needs_input" | "failed" | "permission_denied";
+export type AgentContentBlock = EntityListBlock | EntityDetailBlock | BriefBlock;
+
+export type ExecutionResultStatus = "completed" | "partial" | "needs_input" | "failed" | "permission_denied";
 
 export type ExecutionResult<TData = unknown> = Readonly<{
   status: ExecutionResultStatus;
@@ -52,4 +65,4 @@ export const entityRefSchema = z.object({
   deepLink: z.string().min(1).max(512).optional(),
 }).strict();
 
-export const executionResultStatusSchema = z.enum(["completed", "needs_input", "failed", "permission_denied"]);
+export const executionResultStatusSchema = z.enum(["completed", "partial", "needs_input", "failed", "permission_denied"]);

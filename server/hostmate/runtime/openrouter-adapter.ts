@@ -68,7 +68,29 @@ export type OpenRouterRuntimeEvent =
   | { type: "text_delta"; text: string }
   | { type: "tool_call"; toolName: string; input: Record<string, unknown> }
   | { type: "tool_result"; toolName: string; success: boolean }
-  | { type: "usage"; usage: OpenRouterDetailedUsage };
+  | { type: "usage"; usage: OpenRouterDetailedUsage }
+  | { type: "transport_started"; operation: string; attempt: number }
+  | { type: "transport_response"; operation: string; attempt: number; status: number; latencyMs: number }
+  | { type: "transport_retry"; operation: string; attempt: number; status: number }
+  | { type: "transport_failed"; operation: string; phase: OpenRouterFailurePhase; timeoutKind?: OpenRouterTimeoutKind };
+
+export type OpenRouterFailurePhase = "connect" | "provider" | "generation" | "runtime" | "cancellation";
+export type OpenRouterTimeoutKind = "connect" | "provider" | "generation" | "runtime";
+
+export type OpenRouterObservation = Readonly<{
+  operation: "chat.completions";
+  outcome: "success" | "error" | "timeout" | "cancelled";
+  phase?: OpenRouterFailurePhase;
+  timeoutKind?: OpenRouterTimeoutKind;
+  requestedModel: string;
+  resolvedModel?: string;
+  provider?: string;
+  latencyMs: number;
+  attempts: number;
+  status?: number;
+  errorCode?: NormalizedAgentErrorCode;
+  occurredAt: number;
+}>;
 
 export type OpenRouterDetailedUsage = Readonly<{
   requestedModel: string;
@@ -114,6 +136,7 @@ export type OpenRouterAdapterConfig = Readonly<{
   appName?: string;
   maxTransportRetries?: number;
   fetch?: typeof fetch;
+  onObservation?: (observation: OpenRouterObservation) => void;
 }>;
 
 type StreamResult = {
@@ -123,6 +146,7 @@ type StreamResult = {
   model: string;
   provider?: string;
   finishReason?: string;
+  attempts: number;
 };
 
 function promptContent(prompt: RuntimePrompt): unknown {
@@ -214,12 +238,14 @@ export class OpenRouterAdapter {
     let provider: string | undefined;
     let resolvedModel = request.model;
     let aggregate: OpenRouterUsage = {};
+    let attempts = 0;
     const toolResults: Array<{ toolName: string; text: string; success: boolean }> = [];
 
     try {
       for (let round = 0; round <= options.budget.maxToolRounds; round += 1) {
-        if (abortScope.signal.aborted) throw this.abortError(request.abortController?.signal.aborted ?? false);
+        if (abortScope.signal.aborted) throw this.abortError(request.abortController?.signal.aborted ?? false, "runtime", request.model);
         const stream = await this.streamCompletion(request, options, messages, definitions, abortScope.signal);
+        attempts += stream.attempts;
         resolvedModel = stream.model || resolvedModel;
         provider = stream.provider || provider;
         finishReason = stream.finishReason || finishReason;
@@ -265,8 +291,11 @@ export class OpenRouterAdapter {
       }
     } catch (error) {
       if (abortScope.signal.aborted && !(error instanceof OpenRouterRuntimeError)) {
-        throw this.abortError(request.abortController?.signal.aborted ?? false);
+        const aborted = this.abortError(request.abortController?.signal.aborted ?? false, "runtime", request.model);
+        this.observeFailure(aborted, request.model, startedAt, attempts || 1);
+        throw aborted;
       }
+      if (error instanceof OpenRouterRuntimeError) this.observeFailure(error, request.model, startedAt, attempts || 1);
       throw error;
     } finally {
       abortScope.dispose();
@@ -283,6 +312,10 @@ export class OpenRouterAdapter {
       costUsd: details.costUsd,
     };
     await request.onUsage?.(usage);
+    this.config.onObservation?.({
+      operation: "chat.completions", outcome: "success", requestedModel: request.model,
+      resolvedModel, provider, latencyMs: Date.now() - startedAt, attempts: Math.max(attempts, 1), occurredAt: Date.now(),
+    });
     return {
       runtime: "openrouter",
       text,
@@ -297,12 +330,27 @@ export class OpenRouterAdapter {
     };
   }
 
-  private abortError(cancelledByParent: boolean): OpenRouterRuntimeError {
+  private abortError(cancelledByParent: boolean, timeoutKind: OpenRouterTimeoutKind, requestedModel: string): OpenRouterRuntimeError {
     return new OpenRouterRuntimeError(
       cancelledByParent ? "OpenRouter request cancelled" : "OpenRouter request timed out",
       cancelledByParent ? "CANCELLED" : "TIMEOUT",
       !cancelledByParent,
+      undefined,
+      { operation: "chat.completions", phase: cancelledByParent ? "cancellation" : timeoutKind, timeoutKind: cancelledByParent ? undefined : timeoutKind, requestedModel },
     );
+  }
+
+  private observeFailure(error: OpenRouterRuntimeError, requestedModel: string, startedAt: number, attempts: number): void {
+    const phase = (error.details?.phase as OpenRouterFailurePhase | undefined) ?? (error.code === "CANCELLED" ? "cancellation" : "runtime");
+    const timeoutKind = error.details?.timeoutKind as OpenRouterTimeoutKind | undefined;
+    this.config.onObservation?.({
+      operation: "chat.completions",
+      outcome: error.code === "TIMEOUT" ? "timeout" : error.code === "CANCELLED" ? "cancelled" : "error",
+      phase, timeoutKind, requestedModel,
+      resolvedModel: typeof error.details?.resolvedModel === "string" ? error.details.resolvedModel : undefined,
+      provider: typeof error.details?.provider === "string" ? error.details.provider : undefined,
+      latencyMs: Date.now() - startedAt, attempts, status: error.status, errorCode: error.code, occurredAt: Date.now(),
+    });
   }
 
   private async streamCompletion(
@@ -340,28 +388,62 @@ export class OpenRouterAdapter {
 
     const maxRetries = Math.max(0, this.config.maxTransportRetries ?? 2);
     let response: Response | undefined;
+    let attemptsMade = 0;
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-      response = await this.fetchImpl(this.config.baseUrl ?? "https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${this.config.apiKey}`,
-          "content-type": "application/json",
-          ...(this.config.siteUrl ? { "http-referer": this.config.siteUrl } : {}),
-          ...(this.config.appName ? { "x-title": this.config.appName } : {}),
-        },
-        signal,
-        body: JSON.stringify(body),
-      });
+      attemptsMade = attempt + 1;
+      const transportStartedAt = Date.now();
+      if (options.onEvent) await options.onEvent({ type: "transport_started", operation: "chat.completions", attempt: attempt + 1 });
+      try {
+        response = await this.fetchImpl(this.config.baseUrl ?? "https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${this.config.apiKey}`,
+            "content-type": "application/json",
+            ...(this.config.siteUrl ? { "http-referer": this.config.siteUrl } : {}),
+            ...(this.config.appName ? { "x-title": this.config.appName } : {}),
+          },
+          signal,
+          body: JSON.stringify(body),
+        });
+      } catch (error) {
+        if (signal.aborted) {
+          const timeout = this.abortError(request.abortController?.signal.aborted ?? false, "connect", request.model);
+          await options.onEvent?.({ type: "transport_failed", operation: "chat.completions", phase: request.abortController?.signal.aborted ? "cancellation" : "connect", timeoutKind: request.abortController?.signal.aborted ? undefined : "connect" });
+          throw timeout;
+        }
+        throw new OpenRouterRuntimeError("OpenRouter connection failed", "PROVIDER_UNAVAILABLE", true, undefined, {
+          operation: "chat.completions", phase: "connect", cause: error instanceof Error ? error.name : "unknown",
+        });
+      }
+      await options.onEvent?.({ type: "transport_response", operation: "chat.completions", attempt: attempt + 1, status: response.status, latencyMs: Date.now() - transportStartedAt });
       if (response.ok) break;
       const classification = errorCode(response.status);
       if (!classification.retryable || attempt === maxRetries) {
         const details = (await response.text()).slice(0, 2_000);
-        throw new OpenRouterRuntimeError(`OpenRouter request failed (${response.status})`, classification.code, classification.retryable, response.status, { response: details });
+        const providerTimeout = [408, 504].includes(response.status);
+        throw new OpenRouterRuntimeError(`OpenRouter request failed (${response.status})`, classification.code, classification.retryable, response.status, {
+          response: details, operation: "chat.completions", phase: "provider", ...(providerTimeout ? { timeoutKind: "provider" } : {}),
+        });
       }
+      await options.onEvent?.({ type: "transport_retry", operation: "chat.completions", attempt: attempt + 1, status: response.status });
       await waitForRetry(response, attempt);
     }
     if (!response?.ok) throw new OpenRouterRuntimeError("OpenRouter did not return a response", "PROVIDER_UNAVAILABLE", true);
-    return readStream(response, request, options);
+    try {
+      return { ...(await readStream(response, request, options)), attempts: Math.max(1, attemptsMade) };
+    } catch (error) {
+      if (signal.aborted && !(error instanceof OpenRouterRuntimeError)) {
+        const timeout = this.abortError(request.abortController?.signal.aborted ?? false, "generation", request.model);
+        await options.onEvent?.({ type: "transport_failed", operation: "chat.completions", phase: request.abortController?.signal.aborted ? "cancellation" : "generation", timeoutKind: request.abortController?.signal.aborted ? undefined : "generation" });
+        throw timeout;
+      }
+      if (error instanceof OpenRouterRuntimeError) {
+        throw new OpenRouterRuntimeError(error.message, error.code, error.retryable, error.status, {
+          ...error.details, operation: "chat.completions", phase: "generation",
+        });
+      }
+      throw error;
+    }
   }
 
   private assertBudget(requestedModel: string, resolvedModel: string, provider: string | undefined, usage: OpenRouterUsage, budget: OpenRouterBudget): void {
@@ -403,7 +485,7 @@ function detailedUsage(requestedModel: string, resolvedModel: string, provider: 
   };
 }
 
-async function readStream(response: Response, request: RuntimeRunRequest, options: OpenRouterRunOptions): Promise<StreamResult> {
+async function readStream(response: Response, request: RuntimeRunRequest, options: OpenRouterRunOptions): Promise<Omit<StreamResult, "attempts">> {
   if (!response.body) throw new OpenRouterRuntimeError("OpenRouter returned an empty response body", "PROVIDER_UNAVAILABLE", true);
   const reader = response.body.getReader();
   const decoder = new TextDecoder();

@@ -12,7 +12,7 @@ export type SpawnExecutionRequest = Readonly<{
   objectiveCapabilities: readonly string[];
   inputRefs: readonly EntityRef[];
   dependencyRunIds: readonly string[];
-  skillHints?: readonly string[];
+  internalSkillHints?: readonly string[];
   constraints: Readonly<{ readOnly: boolean; deadlineMs?: number; maxResults?: number }>;
 }>;
 
@@ -38,6 +38,7 @@ export class ExecutionDispatchResolver {
     request: SpawnExecutionRequest;
     allowedToolIds: readonly string[];
     featureEnabled: (toolId: string) => boolean;
+    skillFeatureEnabled?: (featureGate: string) => boolean;
   }): ResolvedExecutionDispatch {
     const profile = this.profiles.get(input.request.profileId);
     if (!input.request.objective.trim()) throw new Error("Execution objective is required");
@@ -55,10 +56,12 @@ export class ExecutionDispatchResolver {
     const capabilities = [...new Set(toolResolution.tools.flatMap((tool) => tool.capabilities))];
     const skills = this.skills.resolve({
       profileId: profile.id,
+      eligibleSkillIds: profile.compatibleSkillIds,
       objectiveClasses: input.request.objectiveClasses,
-      skillHints: input.request.skillHints,
+      internalSkillHints: input.request.internalSkillHints,
       availableToolCapabilities: capabilities,
       actor: input.actor,
+      featureEnabled: input.skillFeatureEnabled,
     });
     return Object.freeze({
       profile,
