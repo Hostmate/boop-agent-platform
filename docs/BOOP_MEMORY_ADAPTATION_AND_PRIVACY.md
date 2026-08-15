@@ -366,3 +366,27 @@ left unchanged:
   extraction, Tenant Memory and consolidation remain OFF. The interaction
   model remains `deepseek/deepseek-v4-flash-0731` with maximum reasoning;
   memory model roles and embedding provider are independently configurable.
+
+## 29. Memory Evaluation Harness
+
+On 2026-08-15, Explicit User Memory V1 was evaluated against the real staging
+runtime, OpenRouter, Convex, policy and Property tools with a persistent,
+pre-annotated corpus: 12 synthetic personas, two tenants, 144 conversations,
+204 turns, 48 deterministic scenarios, 72 synthetic scenarios and 24
+adversarial scenarios.
+
+The untouched baseline produced 106 PASS, 23 PARTIAL and 15 FAIL. Minimal fixes
+were limited to staging evaluation enablement, explicit-language parsing and
+policy reason classification; no categories or Memory capabilities were added.
+The final certification produced 144/144 PASS, 100% write precision/recall,
+rejection accuracy, recall precision/coverage, supersede, Forget, current-input
+precedence and injection resistance, with zero false recall, cross-user
+leakage, cross-tenant leakage or foreign ANN candidates.
+
+Ten real-UI dogfooding conversations and list/detail/filter/delete/Graph checks
+also passed, with observations for atomic rejection of mixed Product Data plus
+preference, OpenRouter latency variance, logout lifecycle and mobile Graph label
+ellipsis. Fail-closed cleanup removed exactly the 12 users and 154 total
+evaluation conversations, restored tenant/user gates and left production
+untouched. Full evidence is in `docs/MEMORY_EVALUATION_REPORT.md` and the
+Hostmate `v2/evals/memory/results` artifacts.
