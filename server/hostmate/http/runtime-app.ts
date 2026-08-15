@@ -3,20 +3,24 @@ import { z } from "zod";
 import { createActorContext } from "../contracts/actor-context.js";
 import { entityRefSchema } from "../contracts/execution-result.js";
 import { ConvexControlPlaneRepository } from "../control-plane/convex-control-plane-repository.js";
+import type { AgentMessageRecord } from "../control-plane/repository.js";
 import { AuthenticatedConvexHttpClient } from "../control-plane/convex-http-client.js";
 import { HostmateHttpLeadSearchPort } from "../product-tools/crm/hostmate-http-lead-search-port.js";
 import { HostmateHttpLeadContextPort } from "../product-tools/crm/hostmate-http-lead-context-port.js";
 import { HostmateHttpLeadVisitsPort } from "../product-tools/visits/hostmate-http-lead-visits-port.js";
 import { HostmateHttpVisitDetailPort } from "../product-tools/visits/hostmate-http-visit-detail-port.js";
+import { HostmateHttpPropertySearchPort } from "../product-tools/property/hostmate-http-property-search-port.js";
 import { OpenRouterAdapter } from "../runtime/openrouter-adapter.js";
 import { CrmSearchLeadsVerticalSlice } from "../vertical-slices/crm-search-leads.js";
+import { PropertySearchPropertiesVerticalSlice } from "../vertical-slices/property-search-properties.js";
+import { classifyInteractionTurn } from "../interaction/turn-classifier.js";
 import { createActorTokenVerifier, type VerifiedActorClaims } from '../security/actor-token-verifier.js';
 import { randomUUID } from 'node:crypto';
 
 const requestSchema = z.object({
   conversationId: z.string().uuid(),
   message: z.string().trim().min(1).max(500),
-  selectedEntityRef: entityRefSchema.extend({ type: z.enum(["crm.lead", "visits.visit", "visits.group_visit"]) }).strict().optional(),
+  selectedEntityRef: entityRefSchema.extend({ type: z.enum(["crm.lead", "visits.visit", "visits.group_visit", "property.property"]) }).strict().optional(),
 }).strict();
 
 type RuntimeTurnRequest = z.infer<typeof requestSchema>;
@@ -41,7 +45,7 @@ export type AgentPlatformRuntimeConfig = Readonly<{
 
 export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig) {
   const app = express();
-  const capabilities = ["crm.search_leads.v1", "crm.get_lead_context.v1", "visits.list_lead_visits.v1", "visits.get_visit.v1"] as const;
+  const capabilities = ["crm.search_leads.v1", "crm.get_lead_context.v1", "visits.list_lead_visits.v1", "visits.get_visit.v1", "property.search_properties.v1"] as const;
   const maxConcurrentTurns = Math.max(1, Math.floor(config.maxConcurrentTurns ?? 8));
   let activeTurns = 0;
   const verifyActorToken = config.verifyActorToken ?? (
@@ -61,8 +65,22 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
       throw new Error('ACTOR_CONTEXT_VERIFICATION_MISMATCH');
     }
     const actor = createActorContext({ ...trusted, isSuperAdmin: trusted.role === "superadmin" });
+    const repository = new ConvexControlPlaneRepository(convex);
+    let priorMessages: readonly AgentMessageRecord[] = [];
+    try { priorMessages = [...await repository.listMessages(actor, { conversationId: input.conversationId, limit: 200 })]; } catch { /* New conversation. */ }
+    const profile = classifyInteractionTurn({ message: input.message, selectedEntityRef: input.selectedEntityRef, priorMessages });
+    if (profile === "property") {
+      const slice = new PropertySearchPropertiesVerticalSlice(
+        repository,
+        new HostmateHttpPropertySearchPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
+        new OpenRouterAdapter({ apiKey: config.openRouterApiKey, appName: "Hostmate Agent Platform" }),
+        { model: config.model, fallbackModels: config.fallbackModels },
+      );
+      const result = await slice.execute(actor, { ...input, requestId: context.requestId, abortController: context.abortController });
+      return { ...result, controlPlaneWrites: convex.writeMetrics() };
+    }
     const slice = new CrmSearchLeadsVerticalSlice(
-      new ConvexControlPlaneRepository(convex),
+      repository,
       new HostmateHttpLeadSearchPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
       new HostmateHttpLeadContextPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
       new HostmateHttpLeadVisitsPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),

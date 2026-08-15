@@ -5,6 +5,7 @@ export type EntityListItem = Readonly<{
   ref: EntityRef;
   title: string;
   subtitle?: string;
+  imageUrl?: string;
   fields: ReadonlyArray<Readonly<{ label: string; value: string }>>;
 }>;
 
