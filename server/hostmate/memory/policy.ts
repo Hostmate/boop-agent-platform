@@ -31,7 +31,7 @@ function normalized(value: string): string {
 
 export function classifyExplicitMemoryCommand(message: string): ExplicitMemoryCommand | null {
   const trimmed = message.trim();
-  const remember = trimmed.match(/^(?:recuerda|memoriza)(?:\s+que)?\s+(.+)$/iu);
+  const remember = trimmed.match(/^(?:(?:oye[,;:]?\s*)?(?:recuerda|recuerd|memoriza|acu[eé]rdate|recorda)(?:\s+de\s+que|\s+que|\s*:\s*)?|quiero\s+que\s+de\s+ahora\s+en\s+adelante\s+|a\s+partir\s+de\s+ahora\s+|siempre\s+que\s+(?:busque\s+inmuebles|prepare(?:s)?\s+una\s+visita)[,;:]?\s*)(.+)$/iu);
   if (remember?.[1]) return { kind: "remember", rawContent: remember[1].trim() };
   const forget = trimmed.match(/^(?:olvida|borra\s+(?:esto\s+)?de\s+(?:tu\s+)?memoria)(?:\s+que)?\s+(.+)$/iu);
   if (forget?.[1]) return { kind: "forget", rawContent: forget[1].trim() };
@@ -63,10 +63,10 @@ function candidateFor(rawContent: string, sourceType: MemoryCandidate["sourceTyp
   if (/\b(?:mas reciente|mas recientes|primero los nuevos|novedades primero)\b/.test(value)) {
     return { ...base, category: "preference", preferenceKey: "property_order", preferenceValue: "newest", content: "Prefiere que los inmuebles más recientes aparezcan primero." };
   }
-  if (/\b(?:resumenes?|respuestas?|resultados?)\b.*\b(?:breves?|cortos?|concisos?)\b|\b(?:breves?|cortos?|concisos?)\b.*\b(?:resumenes?|respuestas?|resultados?)\b/.test(value)) {
+  if (/\b(?:resumenes?|respuestas?|resultados?|respostes?)\b.*\b(?:breves?|breus?|cort[oa]s?|curtes?|concis[oa]s?)\b|\b(?:breves?|breus?|cort[oa]s?|curtes?|concis[oa]s?)\b.*\b(?:resumenes?|respuestas?|resultados?|respostes?)\b/.test(value)) {
     return { ...base, category: "communication_style", preferenceKey: "response_length", preferenceValue: "brief", content: "Prefiere respuestas y resúmenes breves." };
   }
-  if (/\b(?:resumenes?|respuestas?|resultados?)\b.*\b(?:detallados?|largos?|completos?)\b|\b(?:detallados?|largos?|completos?)\b.*\b(?:resumenes?|respuestas?|resultados?)\b/.test(value)) {
+  if (/\b(?:resumenes?|respuestas?|resultados?|respostes?)\b.*\b(?:detallad[oa]s?|detallades?|larg[oa]s?|llargues?|complet[oa]s?|completes?)\b|\b(?:detallad[oa]s?|detallades?|larg[oa]s?|llargues?|complet[oa]s?|completes?)\b.*\b(?:resumenes?|respuestas?|resultados?|respostes?)\b/.test(value)) {
     return { ...base, category: "communication_style", preferenceKey: "response_length", preferenceValue: "detailed", content: "Prefiere respuestas y resúmenes detallados." };
   }
   if (/\b(?:formato\s+)?24\s*(?:h|horas?)\b/.test(value)) {
@@ -83,11 +83,12 @@ function candidateFor(rawContent: string, sourceType: MemoryCandidate["sourceTyp
 
 export function evaluateExplicitMemory(rawContent: string, sourceType: MemoryCandidate["sourceType"] = "explicit_user"): MemoryPolicyDecision {
   const content = rawContent.trim();
+  const policyText = normalized(content);
   if (sourceType !== "explicit_user") return { decision: "reject", code: "UNTRUSTED_MEMORY_SOURCE", explanation: "Solo una petición explícita del usuario autenticado puede crear memoria." };
   if (!content || content.length > 500) return { decision: "reject", code: "MEMORY_CONTENT_INVALID", explanation: "La preferencia debe ser breve y concreta." };
-  if (AUTHORITY_OR_SECRET.test(content)) return { decision: "reject", code: "AUTHORITY_OR_SECRET_DENIED", explanation: "Memory nunca puede guardar secretos, permisos, roles, tools ni selección de tenant." };
   if (DIRECT_PII.test(content)) return { decision: "reject", code: "PII_DENIED", explanation: "Los datos personales de clientes pertenecen al CRM y no a Memory." };
-  if (PRODUCT_FACT.test(content) || CONCRETE_PROPERTY.test(content) || OPERATIONAL_PRICE.test(content) || SCHEDULED_PRODUCT_FACT.test(content)) return { decision: "reject", code: "PRODUCT_DATA_DENIED", explanation: "Ese dato es Product Data y debe consultarse mediante las tools del dominio." };
+  if (PRODUCT_FACT.test(policyText) || CONCRETE_PROPERTY.test(policyText) || OPERATIONAL_PRICE.test(policyText) || SCHEDULED_PRODUCT_FACT.test(policyText)) return { decision: "reject", code: "PRODUCT_DATA_DENIED", explanation: "Ese dato es Product Data y debe consultarse mediante las tools del dominio." };
+  if (AUTHORITY_OR_SECRET.test(policyText)) return { decision: "reject", code: "AUTHORITY_OR_SECRET_DENIED", explanation: "Memory nunca puede guardar secretos, permisos, roles, tools ni selección de tenant." };
   const candidate = candidateFor(content, sourceType);
   if (!candidate) return { decision: "reject", code: "CATEGORY_NOT_ALLOWLISTED", explanation: "En esta fase solo puedo recordar preferencias estables de orden, estilo de respuesta, formato horario o workflow de visita." };
   return { decision: "allow", candidate };
