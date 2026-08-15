@@ -413,8 +413,14 @@ describe("crm.search_leads vertical slice", () => {
     const visits = visitsPort({ listLeadVisits: vi.fn() });
     const detail = visitDetailPort({ getVisit: vi.fn(visitDetailPort().getVisit) });
     const slice = new CrmSearchLeadsVerticalSlice(repository, search, contextPort(), visits, detail, new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock }), { model: "requested/model" });
+    const conversationId = "123e4567-e89b-42d3-a456-426614174025";
+    await repository.createConversation(actor(), { conversationId, title: "AI Chat" });
+    await repository.appendMessage(actor(), {
+      messageId: "property-seed", conversationId, role: "system", contentRedacted: "property context",
+      contextRefs: { selected: { property: { type: "property.property", id: "865", label: "Fixture" } }, referenced: [] }, sequence: 1, createdAt: Date.now(),
+    });
     const turn = await slice.execute(actor(), {
-      conversationId: "123e4567-e89b-42d3-a456-426614174025", message: "Cuéntame más sobre esta visita",
+      conversationId, message: "Cuéntame más sobre esta visita",
       selectedEntityRef: { type: "visits.visit", id: "91", label: "Ático Centro" },
     });
     expect(turn.result).toMatchObject({ status: "completed", data: { visitDetail: { kind: "individual", ref: { id: "91" } } } });
@@ -425,7 +431,7 @@ describe("crm.search_leads vertical slice", () => {
     expect(state.usage).toHaveLength(0);
     const execution = [...state.runs.values()].find((run) => run.kind === "execution");
     expect(execution.toolScope).toEqual(["visits.get_visit.v1@1"]);
-    expect(state.messages.at(-1)).toMatchObject({ contextRefs: { selected: { lead: { id: "123" }, visit: { id: "91" } } } });
+    expect(state.messages.at(-1)).toMatchObject({ contextRefs: { selected: { lead: { id: "123" }, visit: { id: "91" }, property: { id: "865" } } } });
   });
 
   it("resolves a visit ordinal from the latest list and keeps selected lead + selected visit across reconnect", async () => {

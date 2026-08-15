@@ -21,5 +21,7 @@ export * from "./product-tools/visits/list-lead-visits.js";
 export * from "./product-tools/visits/hostmate-http-lead-visits-port.js";
 export * from "./product-tools/property/search-properties.js";
 export * from "./product-tools/property/hostmate-http-property-search-port.js";
+export * from "./product-tools/property/get-property.js";
+export * from "./product-tools/property/hostmate-http-property-detail-port.js";
 export * from "./vertical-slices/property-search-properties.js";
 export * from "./interaction/turn-classifier.js";

@@ -8,6 +8,14 @@ import { ExecutionDispatchResolver } from "../interaction/dispatch.js";
 import { DefaultPolicyEngine } from "../policy/engine.js";
 import { ExecutionProfileRegistry } from "../profiles/registry.js";
 import {
+  PROPERTY_GET_PROPERTY_TOOL_ID,
+  createPropertyGetPropertyTool,
+  toPropertyGetExecutionResult,
+  type PropertyDetailPort,
+  type PropertyGetPropertyOutput,
+  type PropertyGetPropertyInput,
+} from "../product-tools/property/get-property.js";
+import {
   PROPERTY_SEARCH_PROPERTIES_TOOL_ID,
   createPropertySearchPropertiesTool,
   toPropertySearchExecutionResult,
@@ -30,7 +38,7 @@ export type PropertySearchTurnResult = Readonly<{
   conversationId: string;
   interactionRunId: string;
   executionRunId?: string;
-  result: ExecutionResult<PropertySearchPropertiesOutput>;
+  result: ExecutionResult<PropertySearchPropertiesOutput | PropertyGetPropertyOutput>;
   runtime?: OpenRouterRuntimeResult;
 }>;
 
@@ -143,8 +151,13 @@ function latestContext(messages: readonly AgentMessageRecord[]): ConversationCon
 function latestPropertyItem(messages: readonly AgentMessageRecord[], id: string) {
   for (const message of [...messages].reverse()) {
     for (const block of [...(message.blocks ?? [])].reverse()) {
-      const item = block.items.find((candidate) => candidate.ref.type === "property.property" && candidate.ref.id === id);
-      if (item) return item;
+      if (block.type === "entity_detail" && block.ref.type === "property.property" && block.ref.id === id) {
+        return { ref: block.ref, title: block.title, subtitle: block.subtitle, imageUrl: block.imageUrl, fields: block.sections.flatMap((section) => section.fields) };
+      }
+      if (block.type === "entity_list") {
+        const item = block.items.find((candidate) => candidate.ref.type === "property.property" && candidate.ref.id === id);
+        if (item) return item;
+      }
     }
   }
   return undefined;
@@ -155,14 +168,37 @@ function selectedProperty(messages: readonly AgentMessageRecord[]): EntityRef | 
   return ref?.type === "property.property" ? ref : undefined;
 }
 
-function isLimitedDetailFollowUp(message: string): boolean {
-  return /\b(cuentame mas|mas detalle|mas detalles|detalle|informacion completa|amplia)\b/.test(normalize(message));
+function isDetailIntent(message: string): boolean {
+  return /\b(cuentame mas|mas detalle|mas detalles|detalle|detalles|informacion completa|amplia|ampliar|ficha completa)\b/.test(normalize(message));
+}
+
+function isComposedSearchDetail(message: string): boolean {
+  const value = normalize(message);
+  return /\b(busca|buscar|encuentra|encontrar|muestra|muestrame|lista)\b/.test(value)
+    && /\b(detalle|detalles|cuentame mas|informacion completa|ficha completa)\b/.test(value);
+}
+
+function sanitizedDetailEvent(output: PropertyGetPropertyOutput) {
+  return {
+    ref: output.ref,
+    reference: output.reference,
+    title: output.title,
+    status: output.status,
+    price: output.price,
+    currency: output.currency,
+    location: output.location,
+    specifications: output.specifications,
+    features: output.features,
+    imageCount: output.images.length,
+    associatedAgentCount: output.associatedAgents.length,
+  };
 }
 
 export class PropertySearchPropertiesVerticalSlice {
   constructor(
     private readonly repository: ControlPlaneRepository,
     private readonly propertySearch: PropertySearchPort,
+    private readonly propertyDetail: PropertyDetailPort,
     private readonly runtime: OpenRouterAdapter,
     private readonly config: PropertySearchPropertiesSliceConfig,
   ) {
@@ -190,9 +226,15 @@ export class PropertySearchPropertiesVerticalSlice {
     let eventSequence = 0;
     let executionRunId: string | undefined;
     let attemptId: string | undefined;
-    const event = async (type: string, payload: unknown): Promise<void> => {
+    const event = async (
+      type: string,
+      payload: unknown,
+      linkage: "current" | "interaction" | "execution" = "current",
+    ): Promise<void> => {
       await this.repository.appendEvent(actor, {
-        eventId: randomUUID(), conversationId: input.conversationId, interactionRunId, executionRunId, attemptId,
+        eventId: randomUUID(), conversationId: input.conversationId, interactionRunId,
+        executionRunId: linkage === "interaction" ? undefined : executionRunId,
+        attemptId: linkage === "current" ? attemptId : undefined,
         sequence: ++eventSequence, type, visibility: "user", payload: redactEventPayload(payload), occurredAt: Date.now(),
       });
     };
@@ -205,43 +247,42 @@ export class PropertySearchPropertiesVerticalSlice {
     await event("interaction.started", { profile: "property", objective: message.slice(0, 240) });
 
     if (staleSelection) {
-      const result: ExecutionResult<PropertySearchPropertiesOutput> = {
+      const result: ExecutionResult<PropertySearchPropertiesOutput | PropertyGetPropertyOutput> = {
         status: "permission_denied", summary: "Ese inmueble no está disponible dentro de los resultados visibles de esta conversación.",
         entities: [], errors: [{ code: "STALE_REFERENCE", message: "Property selection has no authorized conversation provenance", retryable: false }],
       };
-      await event("interaction.selection.denied", { role: "property", reason: "stale_reference", inferenceCount: 0 });
-      await this.repository.updateRun(actor, interactionRunId, { status: "completed", resultSummary: result.summary, completedAt: Date.now() }, "running");
-      await this.persistAssistant(actor, input.conversationId, sequence, undefined, result, context);
-      return { conversationId: input.conversationId, interactionRunId, result };
-    }
-
-    if (selectedItem) {
-      const result: ExecutionResult<PropertySearchPropertiesOutput> = {
-        status: "completed", summary: `He seleccionado ${selectedItem.title}.`, entities: [selectedItem.ref],
-        blocks: [{ type: "entity_list", title: "Inmueble seleccionado", items: [selectedItem] }], errors: [],
-        suggestedNext: ["Puedes abrir el inmueble. El detalle completo aún no está habilitado en el agente."],
-      };
-      await event("interaction.selection.updated", { role: "property", ref: selectedItem.ref, inferenceCount: 0 });
+      await event("interaction.selection.denied", { role: "property", inputRef: selectedInput, provenance: "missing", reason: "stale_reference", inferenceCount: 0 });
       await this.repository.updateRun(actor, interactionRunId, { status: "completed", resultSummary: result.summary, completedAt: Date.now() }, "running");
       await this.persistAssistant(actor, input.conversationId, sequence, undefined, result, context);
       return { conversationId: input.conversationId, interactionRunId, result };
     }
 
     const currentProperty = selectedProperty(priorMessages);
-    if (currentProperty && isLimitedDetailFollowUp(message)) {
-      const item = latestPropertyItem(priorMessages, currentProperty.id);
-      const result: ExecutionResult<PropertySearchPropertiesOutput> = {
-        status: "completed", summary: "Tengo seleccionado este inmueble, pero todavía no está habilitada la consulta de detalle completo.",
-        entities: [currentProperty], blocks: item ? [{ type: "entity_list", title: "Inmueble seleccionado", items: [item] }] : undefined,
-        errors: [], suggestedNext: ["Puedes abrir el inmueble desde su enlace."],
+    const detailRef = selectedItem?.ref ?? (currentProperty && isDetailIntent(message) ? currentProperty : undefined);
+    const composed = !detailRef && isComposedSearchDetail(message);
+    if (!detailRef && !composed && isDetailIntent(message)) {
+      const result: ExecutionResult<PropertySearchPropertiesOutput | PropertyGetPropertyOutput> = {
+        status: "needs_input",
+        summary: "Necesito que selecciones un inmueble concreto antes de mostrar su detalle.",
+        entities: [], errors: [], suggestedNext: ["Selecciona uno de los inmuebles de una búsqueda anterior."],
       };
-      await event("interaction.follow_up.unavailable", { role: "property", missingCapability: "property.get_property.v1", inferenceCount: 0 });
+      await event("interaction.needs_selection", { role: "property", reason: "ambiguous_property_detail", inferenceCount: 0 });
       await this.repository.updateRun(actor, interactionRunId, { status: "completed", resultSummary: result.summary, completedAt: Date.now() }, "running");
       await this.persistAssistant(actor, input.conversationId, sequence, undefined, result, context);
       return { conversationId: input.conversationId, interactionRunId, result };
     }
 
+    if (detailRef) {
+      await event("interaction.selection.updated", {
+        role: "property", inputRef: detailRef, provenance: selectedItem ? "explicit_conversation_result" : "selected_context", inferenceCount: 0,
+      });
+      executionRunId = randomUUID();
+      attemptId = randomUUID();
+      return this.executeDirectDetail({ actor, input, message, interactionRunId, executionRunId, attemptId, sequence, context, detailRef, event });
+    }
+
     let output: PropertySearchPropertiesOutput | undefined;
+    let detailOutput: PropertyGetPropertyOutput | undefined;
     let requestedToolInput: Record<string, unknown> | undefined;
     let sanitizedToolInput: PropertySearchFilters | undefined;
     const boundPort: PropertySearchPort = {
@@ -250,11 +291,15 @@ export class PropertySearchPropertiesVerticalSlice {
         return this.propertySearch.search(boundActor, sanitizedToolInput);
       },
     };
-    const toolRegistry = new ProductToolRegistry([createPropertySearchPropertiesTool({ port: boundPort, onResult: (result) => { output = result; } })]);
+    const searchTool = createPropertySearchPropertiesTool({ port: boundPort, onResult: (result) => { output = result; } });
+    const detailTool = createPropertyGetPropertyTool({ port: this.propertyDetail, onResult: (result) => { detailOutput = result; } });
+    const toolRegistry = new ProductToolRegistry([searchTool, detailTool]);
+    const allowedToolIds = composed ? [PROPERTY_SEARCH_PROPERTIES_TOOL_ID, PROPERTY_GET_PROPERTY_TOOL_ID] : [PROPERTY_SEARCH_PROPERTIES_TOOL_ID];
+    const objectiveCapabilities = composed ? ["property.property.search", "property.property.read"] : ["property.property.search"];
     const dispatch = new ExecutionDispatchResolver(new ExecutionProfileRegistry(), toolRegistry, new SkillRegistry()).resolve({
-      actor, allowedToolIds: [PROPERTY_SEARCH_PROPERTIES_TOOL_ID], featureEnabled: (toolId) => toolId === PROPERTY_SEARCH_PROPERTIES_TOOL_ID,
+      actor, allowedToolIds, featureEnabled: (toolId) => allowedToolIds.includes(toolId),
       request: {
-        profileId: "property", objective: message, objectiveClasses: ["property.search"], objectiveCapabilities: ["property.property.search"],
+        profileId: "property", objective: message, objectiveClasses: composed ? ["property.search", "property.lookup"] : ["property.search"], objectiveCapabilities,
         inputRefs: [], dependencyRunIds: [], skillHints: [], constraints: { readOnly: true, maxResults: 6 },
       },
     });
@@ -270,13 +315,13 @@ export class PropertySearchPropertiesVerticalSlice {
       dependencyRunIds: [], registryHash: dispatch.toolResolution.registryHash, skillVersions: {}, toolScope,
       requestedModel: this.config.model, visibility: "user",
     });
-    if (dispatch.toolResolution.tools.length !== 1) {
-      const result: ExecutionResult<PropertySearchPropertiesOutput> = {
+    if (dispatch.toolResolution.tools.length !== allowedToolIds.length) {
+      const result: ExecutionResult<PropertySearchPropertiesOutput | PropertyGetPropertyOutput> = {
         status: "permission_denied", summary: "No tienes permiso para consultar inmuebles en este contexto.", entities: [],
         errors: [{ code: "PERMISSION_DENIED", message: dispatch.toolResolution.rejected[0]?.reason ?? "Tool unavailable", retryable: false }],
       };
       await this.repository.updateRun(actor, executionRunId, { status: "failed", errorCode: "PERMISSION_DENIED", resultSummary: result.summary, completedAt: Date.now() }, "queued");
-      await event("execution.permission_denied", { rejected: dispatch.toolResolution.rejected });
+      await event("execution.permission_denied", { rejected: dispatch.toolResolution.rejected }, "execution");
       await this.persistAssistant(actor, input.conversationId, sequence, executionRunId, result, context);
       return { conversationId: input.conversationId, interactionRunId, executionRunId, result };
     }
@@ -289,6 +334,7 @@ export class PropertySearchPropertiesVerticalSlice {
       resolved: dispatch.toolResolution, actor, policy: new DefaultPolicyEngine(), profileId: "property",
       decisionId: () => randomUUID(), hasRequiredPreconditions: () => true,
     });
+    const searchRuntimeTools = runtimeTools.filter((tool) => tool.namespace === "property" && tool.name === "search_properties");
 
     let runtime: OpenRouterRuntimeResult | undefined;
     try {
@@ -303,7 +349,7 @@ export class PropertySearchPropertiesVerticalSlice {
           "rooms and bathrooms are exact-only. Never convert 'at least' or 'at most' into an exact count.",
           "Never invent tenant, actor, status, operation, type, price, city, features, ordering, IDs or pagination.",
         ].join("\n"),
-        model: this.config.model, mode: "execution", tools: [...runtimeTools], allowedTools: ["property.search_properties"],
+        model: this.config.model, mode: "execution", tools: [...searchRuntimeTools], allowedTools: ["property.search_properties"],
         onToolUse: async (toolName, toolInput) => { requestedToolInput = toolInput as Record<string, unknown>; await event("tool.started", { toolName, inputRequested: toolInput }); },
         onToolResult: async (toolName) => await event("tool.completed", {
           toolName, service: "property.service.list", inputRequested: requestedToolInput, inputSanitized: sanitizedToolInput,
@@ -327,16 +373,38 @@ export class PropertySearchPropertiesVerticalSlice {
         fallbackUsed: runtime.detailedUsage.fallbackUsed, finishReason: runtime.finishReason, createdAt: Date.now(),
       });
       await event("model.completed", { inference: 1, requestedModel: runtime.requestedModel, resolvedModel: runtime.resolvedModel, provider: runtime.provider, finishReason: runtime.finishReason, usage: runtime.detailedUsage, latencyMs: runtime.latencyMs });
-      const result = toPropertySearchExecutionResult(output);
+      let result: ExecutionResult<PropertySearchPropertiesOutput | PropertyGetPropertyOutput> = toPropertySearchExecutionResult(output);
+      if (composed && output.matches.length > 0) {
+        const selected = output.matches[0]!;
+        const detailRuntimeTool = runtimeTools.find((tool) => tool.namespace === "property" && tool.name === "get_property");
+        if (!detailRuntimeTool) throw new Error("PERMISSION_DENIED: property detail tool unavailable");
+        const detailInput: PropertyGetPropertyInput = { property: selected.ref };
+        await event("tool.requested", { toolId: PROPERTY_GET_PROPERTY_TOOL_ID, version: 1, inputRef: selected.ref, provenance: "property.search_properties.v1:first_ordered_result" });
+        await event("tool.started", { toolName: "property.get_property", inputSanitized: detailInput });
+        const detailToolResult = await detailRuntimeTool.handle(detailInput);
+        if (!detailToolResult.success || !detailOutput) throw new Error("Property detail tool failed after search");
+        await event("tool.completed", {
+          toolName: "property.get_property", service: detailOutput.telemetry.services,
+          inputSanitized: detailInput, provenance: "property.search_properties.v1:first_ordered_result",
+          latencyMs: detailOutput.telemetry.latencyMs, entityRefs: [detailOutput.ref], resultSanitized: sanitizedDetailEvent(detailOutput),
+        });
+        context = { selected: { ...context.selected, property: detailOutput.ref }, referenced: context.referenced };
+        result = toPropertyGetExecutionResult(detailOutput);
+      }
       await this.repository.updateAttempt(actor, { attemptId, expectedStatus: "running", patch: { status: "succeeded", completedAt: Date.now() } });
       await this.repository.updateRun(actor, executionRunId, { status: "completed", resolvedModel: runtime.resolvedModel, provider: runtime.provider, finishReason: runtime.finishReason, resultSummary: result.summary, completedAt: Date.now() }, "running");
-      await event("execution.completed", { status: result.status, entityCount: result.entities.length, inferenceCount: 1, propertyServiceLatencyMs: output.telemetry?.latencyMs, returned: output.returned, total: output.total, hasMore: output.hasMore });
+      await event("execution.completed", {
+        status: result.status, entityCount: result.entities.length, inferenceCount: 1,
+        propertyServiceLatencyMs: output.telemetry?.latencyMs,
+        detailServiceLatencyMs: detailOutput?.telemetry.latencyMs,
+        returned: output.returned, total: output.total, hasMore: output.hasMore,
+      });
       await this.persistAssistant(actor, input.conversationId, sequence, executionRunId, result, context);
       return { conversationId: input.conversationId, interactionRunId, executionRunId, result, runtime };
     } catch (error) {
       const runtimeError = error instanceof OpenRouterRuntimeError ? error : undefined;
       const code = runtimeError?.code ?? (/PERMISSION|STALE_REFERENCE/.test(String(error)) ? "PERMISSION_DENIED" : "INTERNAL");
-      const result: ExecutionResult<PropertySearchPropertiesOutput> = {
+      const result: ExecutionResult<PropertySearchPropertiesOutput | PropertyGetPropertyOutput> = {
         status: code === "PERMISSION_DENIED" ? "permission_denied" : "failed",
         summary: code === "PERMISSION_DENIED" ? "La búsqueda no está disponible dentro de tu scope actual." : "No se pudo completar la búsqueda de inmuebles.",
         entities: [], errors: [{ code, message: runtimeError?.message ?? "Internal execution error", retryable: runtimeError?.retryable ?? false }],
@@ -349,7 +417,98 @@ export class PropertySearchPropertiesVerticalSlice {
     }
   }
 
-  private async persistAssistant(actor: ActorContext, conversationId: string, sequence: number, runId: string | undefined, result: ExecutionResult<PropertySearchPropertiesOutput>, context: ConversationContextRefs) {
+  private async executeDirectDetail(input: {
+    actor: ActorContext;
+    input: { conversationId: string; requestId?: string };
+    message: string;
+    interactionRunId: string;
+    executionRunId: string;
+    attemptId: string;
+    sequence: number;
+    context: ConversationContextRefs;
+    detailRef: EntityRef;
+    event: (type: string, payload: unknown, linkage?: "current" | "interaction" | "execution") => Promise<void>;
+  }): Promise<PropertySearchTurnResult> {
+    const { actor, message, interactionRunId, executionRunId, attemptId, sequence, detailRef, event } = input;
+    let context = input.context;
+    let detailOutput: PropertyGetPropertyOutput | undefined;
+    const detailTool = createPropertyGetPropertyTool({ port: this.propertyDetail, onResult: (result) => { detailOutput = result; } });
+    const registry = new ProductToolRegistry([detailTool]);
+    const dispatch = new ExecutionDispatchResolver(new ExecutionProfileRegistry(), registry, new SkillRegistry()).resolve({
+      actor, allowedToolIds: [PROPERTY_GET_PROPERTY_TOOL_ID], featureEnabled: (toolId) => toolId === PROPERTY_GET_PROPERTY_TOOL_ID,
+      request: {
+        profileId: "property", objective: message, objectiveClasses: ["property.lookup"], objectiveCapabilities: ["property.property.read"],
+        inputRefs: [detailRef], dependencyRunIds: [], skillHints: [], constraints: { readOnly: true, maxResults: 1 },
+      },
+    });
+    const toolScope = dispatch.toolResolution.tools.map((tool) => `${tool.toolId}@${tool.version}`);
+    // The direct path allocates IDs before entering this method. Keep the
+    // dispatch event interaction-only until the Execution Run and Attempt
+    // documents exist, otherwise Convex correctly rejects dangling links.
+    await event("interaction.dispatch.resolved", { profile: "property", profileVersion: dispatch.profile.version, toolScope, skillVersions: {}, inputRefs: [detailRef] }, "interaction");
+    await this.repository.updateRun(actor, interactionRunId, { status: "completed", resultSummary: "Dispatched property detail", completedAt: Date.now() }, "running");
+
+    await this.repository.createRun(actor, {
+      runId: executionRunId, conversationId: input.input.conversationId, kind: "execution", profileId: "property", profileVersion: dispatch.profile.version,
+      objectiveHash: dispatch.objectiveHash, objectiveRedacted: message.slice(0, 240), parentRunId: interactionRunId,
+      dependencyRunIds: [], registryHash: dispatch.toolResolution.registryHash, skillVersions: {}, toolScope, visibility: "user",
+    });
+    if (dispatch.toolResolution.tools.length !== 1) {
+      const result: ExecutionResult<PropertySearchPropertiesOutput | PropertyGetPropertyOutput> = {
+        status: "permission_denied", summary: "No tienes permiso para consultar el detalle de este inmueble.", entities: [],
+        errors: [{ code: "PERMISSION_DENIED", message: dispatch.toolResolution.rejected[0]?.reason ?? "Tool unavailable", retryable: false }],
+      };
+      await this.repository.updateRun(actor, executionRunId, { status: "failed", errorCode: "PERMISSION_DENIED", resultSummary: result.summary, completedAt: Date.now() }, "queued");
+      await event("execution.permission_denied", { rejected: dispatch.toolResolution.rejected, inferenceCount: 0 }, "execution");
+      await this.persistAssistant(actor, input.input.conversationId, sequence, executionRunId, result, context);
+      return { conversationId: input.input.conversationId, interactionRunId, executionRunId, result };
+    }
+
+    await this.repository.createAttempt(actor, { attemptId, runId: executionRunId, attemptNumber: 1, status: "queued", fencingToken: 0 });
+    await this.repository.updateAttempt(actor, { attemptId, expectedStatus: "queued", patch: { status: "running", startedAt: Date.now() } });
+    await this.repository.updateRun(actor, executionRunId, { status: "running" }, "queued");
+    await event("execution.started", { profile: "property", profileVersion: dispatch.profile.version, inferenceCount: 0 });
+    try {
+      const runtimeTool = registry.compileRuntimeTools({
+        resolved: dispatch.toolResolution, actor, policy: new DefaultPolicyEngine(), profileId: "property",
+        decisionId: () => randomUUID(), hasRequiredPreconditions: () => true,
+      })[0]!;
+      const sanitizedInput: PropertyGetPropertyInput = { property: detailRef as PropertyGetPropertyInput["property"] };
+      await event("tool.requested", { toolId: PROPERTY_GET_PROPERTY_TOOL_ID, version: 1, inputRef: detailRef, provenance: "authorized_conversation_selection" });
+      await event("tool.started", { toolName: "property.get_property", inputSanitized: sanitizedInput });
+      const toolResult = await runtimeTool.handle(sanitizedInput);
+      if (!toolResult.success || !detailOutput) throw new Error("Property detail tool failed");
+      await event("tool.completed", {
+        toolName: "property.get_property", service: detailOutput.telemetry.services,
+        inputSanitized: sanitizedInput, provenance: "authorized_conversation_selection",
+        latencyMs: detailOutput.telemetry.latencyMs, entityRefs: [detailOutput.ref], resultSanitized: sanitizedDetailEvent(detailOutput),
+      });
+      const result = toPropertyGetExecutionResult(detailOutput);
+      context = { selected: { ...context.selected, property: detailOutput.ref }, referenced: context.referenced };
+      await this.repository.updateAttempt(actor, { attemptId, expectedStatus: "running", patch: { status: "succeeded", completedAt: Date.now() } });
+      await this.repository.updateRun(actor, executionRunId, { status: "completed", resultSummary: result.summary, completedAt: Date.now() }, "running");
+      await event("execution.completed", { status: result.status, entityCount: 1, inferenceCount: 0, detailServiceLatencyMs: detailOutput.telemetry.latencyMs });
+      await this.persistAssistant(actor, input.input.conversationId, sequence, executionRunId, result, context);
+      return { conversationId: input.input.conversationId, interactionRunId, executionRunId, result };
+    } catch (error) {
+      const raw = String(error);
+      const denied = /PERMISSION|STALE_REFERENCE|403/.test(raw);
+      const notFound = /NOT_FOUND|404/.test(raw);
+      const code = denied ? "PERMISSION_DENIED" : notFound ? "NOT_FOUND" : "INTERNAL";
+      const result: ExecutionResult<PropertySearchPropertiesOutput | PropertyGetPropertyOutput> = {
+        status: denied ? "permission_denied" : "failed",
+        summary: denied ? "Este inmueble ya no está disponible dentro de tu scope actual." : "No se pudo consultar el detalle del inmueble.",
+        entities: [], errors: [{ code, message: "Property detail read failed", retryable: false }],
+      };
+      await this.repository.updateAttempt(actor, { attemptId, expectedStatus: "running", patch: { status: "failed", completedAt: Date.now(), errorCode: code } });
+      await this.repository.updateRun(actor, executionRunId, { status: "failed", errorCode: code, resultSummary: result.summary, completedAt: Date.now() }, "running");
+      await event("execution.failed", { errorCode: code, inferenceCount: 0, inputRef: detailRef });
+      await this.persistAssistant(actor, input.input.conversationId, sequence, executionRunId, result, context);
+      return { conversationId: input.input.conversationId, interactionRunId, executionRunId, result };
+    }
+  }
+
+  private async persistAssistant(actor: ActorContext, conversationId: string, sequence: number, runId: string | undefined, result: ExecutionResult<PropertySearchPropertiesOutput | PropertyGetPropertyOutput>, context: ConversationContextRefs) {
     const referenced = [...new Map(result.entities.map((ref) => [`${ref.type}:${ref.id}`, ref])).values()];
     await this.repository.appendMessage(actor, {
       messageId: randomUUID(), conversationId, role: "assistant", contentRedacted: result.summary,

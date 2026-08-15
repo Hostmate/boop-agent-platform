@@ -10,6 +10,7 @@ import { HostmateHttpLeadContextPort } from "../product-tools/crm/hostmate-http-
 import { HostmateHttpLeadVisitsPort } from "../product-tools/visits/hostmate-http-lead-visits-port.js";
 import { HostmateHttpVisitDetailPort } from "../product-tools/visits/hostmate-http-visit-detail-port.js";
 import { HostmateHttpPropertySearchPort } from "../product-tools/property/hostmate-http-property-search-port.js";
+import { HostmateHttpPropertyDetailPort } from "../product-tools/property/hostmate-http-property-detail-port.js";
 import { OpenRouterAdapter } from "../runtime/openrouter-adapter.js";
 import { CrmSearchLeadsVerticalSlice } from "../vertical-slices/crm-search-leads.js";
 import { PropertySearchPropertiesVerticalSlice } from "../vertical-slices/property-search-properties.js";
@@ -45,7 +46,7 @@ export type AgentPlatformRuntimeConfig = Readonly<{
 
 export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig) {
   const app = express();
-  const capabilities = ["crm.search_leads.v1", "crm.get_lead_context.v1", "visits.list_lead_visits.v1", "visits.get_visit.v1", "property.search_properties.v1"] as const;
+  const capabilities = ["crm.search_leads.v1", "crm.get_lead_context.v1", "visits.list_lead_visits.v1", "visits.get_visit.v1", "property.search_properties.v1", "property.get_property.v1"] as const;
   const maxConcurrentTurns = Math.max(1, Math.floor(config.maxConcurrentTurns ?? 8));
   let activeTurns = 0;
   const verifyActorToken = config.verifyActorToken ?? (
@@ -73,6 +74,7 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
       const slice = new PropertySearchPropertiesVerticalSlice(
         repository,
         new HostmateHttpPropertySearchPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
+        new HostmateHttpPropertyDetailPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
         new OpenRouterAdapter({ apiKey: config.openRouterApiKey, appName: "Hostmate Agent Platform" }),
         { model: config.model, fallbackModels: config.fallbackModels },
       );

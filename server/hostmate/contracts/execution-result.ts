@@ -9,11 +9,29 @@ export type EntityListItem = Readonly<{
   fields: ReadonlyArray<Readonly<{ label: string; value: string }>>;
 }>;
 
-export type AgentContentBlock = Readonly<{
+export type EntityListBlock = Readonly<{
   type: "entity_list";
   title: string;
   items: readonly EntityListItem[];
 }>;
+
+export type EntityDetailBlock = Readonly<{
+  type: "entity_detail";
+  title: string;
+  ref: EntityRef;
+  subtitle?: string;
+  imageUrl?: string;
+  gallery?: readonly Readonly<{ url: string; thumbnailUrl?: string; caption?: string }>[];
+  badges?: readonly string[];
+  description?: string;
+  sections: readonly Readonly<{
+    title: string;
+    fields: readonly Readonly<{ label: string; value: string }>[];
+  }>[];
+  actions?: readonly Readonly<{ label: string; href: string }>[];
+}>;
+
+export type AgentContentBlock = EntityListBlock | EntityDetailBlock;
 
 export type ExecutionResultStatus = "completed" | "needs_input" | "failed" | "permission_denied";
 

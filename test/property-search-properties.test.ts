@@ -3,6 +3,13 @@ import { createActorContext } from "../server/hostmate/contracts/actor-context.j
 import type { ControlPlaneRepository } from "../server/hostmate/control-plane/repository.js";
 import { classifyInteractionTurn } from "../server/hostmate/interaction/turn-classifier.js";
 import {
+  PROPERTY_GET_PROPERTY_TOOL_ID,
+  createPropertyGetPropertyTool,
+  propertyGetPropertyInputSchema,
+  toPropertyGetExecutionResult,
+  type PropertyDetailPort,
+} from "../server/hostmate/product-tools/property/get-property.js";
+import {
   PROPERTY_SEARCH_PROPERTIES_TOOL_ID,
   createPropertySearchPropertiesTool,
   propertySearchPropertiesInputSchema,
@@ -32,6 +39,19 @@ function serviceResult(count = 2) {
   };
 }
 
+function detailPort(): PropertyDetailPort {
+  return { get: vi.fn(async (_seenActor, input) => ({
+    id: input.property.id, reference: `STG-${input.property.id}`, title: "Piso Estació",
+    operation: "alquilar", propertyType: "piso", status: "activo", price: 1200, currency: "EUR" as const,
+    location: { city: "Manresa", neighborhood: "Estació", province: "Barcelona" },
+    specifications: { rooms: 3, bathrooms: 2, areaBuilt: 90, areaUseful: 82, plotArea: null, floor: "2", yearBuilt: 2001, ceilingHeight: null, loadingDocks: null, powerSupplyKw: null, officeArea: null, storefrontCount: null, grossYieldPct: null },
+    features: ["terraza"], description: "Descripción pública", publicNotes: null,
+    images: [{ url: "https://images.example.test/piso.jpg", thumbnailUrl: null, caption: "Salón" }],
+    associatedAgents: [{ id: "43", name: "Agent A", priority: 1 }],
+    telemetry: { services: ["property.service.getById"], latencyMs: 6 },
+  })) };
+}
+
 function output(count: number): PropertySearchPropertiesOutput {
   const tool = createPropertySearchPropertiesTool({ port: { search: async () => serviceResult(count) } });
   return tool.handler({ city: "Manresa" }, actor()) as unknown as PropertySearchPropertiesOutput;
@@ -50,7 +70,11 @@ function memoryRepository() {
     async createRun(_a: any, input: any) { const value = { ...input, tenantId: "15", actorUserId: "43", status: "queued", createdAt: Date.now(), updatedAt: Date.now() }; state.runs.set(input.runId, value); return value; },
     async getRun(_a: any, id: string) { return state.runs.get(id) ?? null; }, async listRuns() { return [...state.runs.values()]; },
     async updateRun(_a: any, id: string, patch: any) { const value = { ...state.runs.get(id), ...patch, updatedAt: Date.now() }; state.runs.set(id, value); return value; },
-    async appendEvent(_a: any, input: any) { state.events.push(input); return { ...input, tenantId: "15", actorUserId: "43", payloadRedacted: input.payload }; },
+    async appendEvent(_a: any, input: any) {
+      if (input.executionRunId && !state.runs.has(input.executionRunId)) throw new Error("RUN_FORBIDDEN");
+      if (input.attemptId && !state.attempts.has(input.attemptId)) throw new Error("ATTEMPT_FORBIDDEN");
+      state.events.push(input); return { ...input, tenantId: "15", actorUserId: "43", payloadRedacted: input.payload };
+    },
     async listEvents() { return state.events; }, async listUsage() { return state.usage; },
     async createAttempt(_a: any, input: any) { state.attempts.set(input.attemptId, input); return input; },
     async updateAttempt(_a: any, input: any) { const value = { ...state.attempts.get(input.attemptId), ...input.patch }; state.attempts.set(input.attemptId, value); return value; },
@@ -112,6 +136,37 @@ describe("property.search_properties.v1 contract", () => {
   });
 });
 
+describe("property.get_property.v1 contract", () => {
+  it("accepts only one canonical Property EntityRef and rejects free ids, search and authority input", () => {
+    expect(propertyGetPropertyInputSchema.parse({ property: { type: "property.property", id: "853", label: "STAGING-PM-579" } })).toMatchObject({ property: { id: "853" } });
+    for (const malicious of [
+      { id: "853" }, { propertyId: 853 }, { query: "STAGING-PM-579" },
+      { property: { type: "crm.lead", id: "853" } },
+      { property: { type: "property.property", id: "853", tenantId: "16" } },
+      { property: { type: "property.property", id: "853" }, tenant_id: 16 },
+      { property: { type: "property.property", id: "0" } },
+    ]) expect(propertyGetPropertyInputSchema.safeParse(malicious).success).toBe(false);
+  });
+
+  it("binds ActorContext in closure, sanitizes output and renders a generic detail block", async () => {
+    const port = detailPort();
+    const output = await createPropertyGetPropertyTool({ port }).handler({ property: { type: "property.property", id: "853", label: "Fixture", deepLink: "/forged" } }, actor()) as any;
+    expect(port.get).toHaveBeenCalledWith(expect.objectContaining({ tenantId: "15", userId: "43" }), expect.objectContaining({ property: expect.objectContaining({ id: "853" }) }));
+    expect(output.ref).toEqual(expect.objectContaining({ type: "property.property", id: "853", deepLink: "/properties?highlight=853" }));
+    expect(toPropertyGetExecutionResult(output)).toMatchObject({ status: "completed", blocks: [{ type: "entity_detail", ref: { id: "853" } }] });
+    expect(JSON.stringify(output)).not.toMatch(/tenantId|permissionsVersion|sessionId|observations|private/);
+  });
+
+  it("is R0/read-only, permissioned and profile-scoped", () => {
+    const tool = createPropertyGetPropertyTool({ port: detailPort() });
+    const registry = new ProductToolRegistry([tool]);
+    expect(tool).toMatchObject({ toolId: PROPERTY_GET_PROPERTY_TOOL_ID, version: 1, ownerDomain: "property", mode: "read", risk: "R0", requiredPermission: "property.read" });
+    expect(registry.resolve({ profileId: "property", objectiveCapabilities: ["property.property.read"], actor: actor(), featureEnabled: () => true, readOnly: true }).tools).toHaveLength(1);
+    expect(registry.resolve({ profileId: "property", objectiveCapabilities: ["property.property.read"], actor: actor("15", []), featureEnabled: () => true, readOnly: true }).rejected)
+      .toEqual([{ toolId: PROPERTY_GET_PROPERTY_TOOL_ID, reason: "missing_permission" }]);
+  });
+});
+
 describe("Property Interaction → Execution", () => {
   it("detects only property search/follow-up and leaves ordinary CRM work unchanged", () => {
     expect(classifyInteractionTurn({ message: "Busca pisos en Manresa" })).toBe("property");
@@ -132,7 +187,7 @@ describe("Property Interaction → Execution", () => {
     }));
     const { repository, state } = memoryRepository();
     const port: PropertySearchPort = { search: vi.fn(async () => serviceResult(2)) };
-    const slice = new PropertySearchPropertiesVerticalSlice(repository, port, new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock, maxTransportRetries: 0 }), { model: "requested/model" });
+    const slice = new PropertySearchPropertiesVerticalSlice(repository, port, detailPort(), new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock, maxTransportRetries: 0 }), { model: "requested/model" });
     const turn = await slice.execute(actor(), { conversationId: "123e4567-e89b-42d3-a456-426614174100", message: "Busca pisos en Manresa" });
     expect(turn.result).toMatchObject({ status: "completed", data: { appliedFilters: { city: "Manresa", propertyType: "piso" }, returned: 2 } });
     expect(port.search).toHaveBeenCalledWith(expect.anything(), { city: "Manresa", propertyType: "piso" });
@@ -150,7 +205,7 @@ describe("Property Interaction → Execution", () => {
     });
   });
 
-  it("persists selected.property without deleting lead and refuses invented detail with zero inference", async () => {
+  it("persists lead, visit and property selections and gets selected detail with zero inference", async () => {
     const fetchMock = vi.fn(async () => sse({
       model: "provider/resolved", choices: [{ delta: { tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: "property__search_properties_0", arguments: '{"city":"Manresa"}' } }] }, finish_reason: "tool_calls" }],
       usage: { prompt_tokens: 30, completion_tokens: 6, cost: 0.001 },
@@ -160,19 +215,61 @@ describe("Property Interaction → Execution", () => {
     await repository.createConversation(actor(), { conversationId, title: "AI Chat" });
     await repository.appendMessage(actor(), {
       messageId: "seed", conversationId, role: "system", contentRedacted: "lead context",
-      contextRefs: { selected: { lead: { type: "crm.lead", id: "4995", label: "Lead fixture" } }, referenced: [] }, sequence: 1, createdAt: Date.now(),
+      contextRefs: { selected: { lead: { type: "crm.lead", id: "4995", label: "Lead fixture" }, visit: { type: "visits.visit", id: "458", label: "Visit fixture" } }, referenced: [] }, sequence: 1, createdAt: Date.now(),
     });
-    const slice = new PropertySearchPropertiesVerticalSlice(repository, { search: async () => serviceResult(1) }, new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock }), { model: "requested/model" });
+    const slice = new PropertySearchPropertiesVerticalSlice(repository, { search: async () => serviceResult(1) }, detailPort(), new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock }), { model: "requested/model" });
     const search = await slice.execute(actor(), { conversationId, message: "Busca inmuebles en Manresa" });
     const ref = search.result.entities[0]!;
-    await slice.execute(actor(), { conversationId, message: "Selecciona Piso Estació", selectedEntityRef: ref });
+    const selected = await slice.execute(actor(), { conversationId, message: "Cuéntame más sobre Piso Estació", selectedEntityRef: ref });
     const selectedMessage = state.messages.at(-1);
-    expect(selectedMessage.contextRefs.selected).toMatchObject({ lead: { id: "4995" }, property: { type: "property.property", id: "101" } });
+    expect(selected.result.blocks).toMatchObject([{ type: "entity_detail" }]);
+    expect(selectedMessage.contextRefs.selected).toMatchObject({ lead: { id: "4995" }, visit: { id: "458" }, property: { type: "property.property", id: "101" } });
     const followUp = await slice.execute(actor(), { conversationId, message: "Cuéntame más" });
-    expect(followUp.executionRunId).toBeUndefined();
-    expect(followUp.result.summary).toMatch(/todavía no está habilitada/);
+    expect(followUp.executionRunId).toBeDefined();
+    expect(followUp.result.blocks).toMatchObject([{ type: "entity_detail" }]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(state.usage).toHaveLength(1);
+    const executionScopes = [...state.runs.values()].filter((run) => run.kind === "execution").map((run) => run.toolScope);
+    expect(executionScopes).toEqual([["property.search_properties.v1@1"], ["property.get_property.v1@1"], ["property.get_property.v1@1"]]);
+    expect(state.events.filter((event) => event.type === "execution.completed").at(-1)?.payload).toMatchObject({ inferenceCount: 0, detailServiceLatencyMs: 6 });
+  });
+
+  it("composes search then deterministic cheapest detail in one run and one inference", async () => {
+    const fetchMock = vi.fn(async () => sse({
+      model: "provider/resolved", provider: "Provider A",
+      choices: [{ delta: { tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: "property__search_properties_0", arguments: '{"propertyType":"piso","features":["piscina"],"order":"price_asc"}' } }] }, finish_reason: "tool_calls" }],
+      usage: { prompt_tokens: 55, completion_tokens: 9, cost: 0.002 },
+    }));
+    const { repository, state } = memoryRepository();
+    const details = detailPort();
+    const search: PropertySearchPort = { search: vi.fn(async () => ({
+      ...serviceResult(2),
+      items: serviceResult(2).items.map((item, index) => ({ ...item, price: 1000 + index * 500, features: ["piscina"] })),
+    })) };
+    const slice = new PropertySearchPropertiesVerticalSlice(repository, search, details, new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock }), { model: "requested/model" });
+    const turn = await slice.execute(actor(), { conversationId: "123e4567-e89b-42d3-a456-426614174103", message: "Busca pisos con piscina y cuéntame los detalles del más barato" });
+    expect(turn.result).toMatchObject({ status: "completed", data: { id: "101" }, blocks: [{ type: "entity_detail" }] });
+    expect(search.search).toHaveBeenCalledWith(expect.anything(), { propertyType: "piso", features: ["piscina"], order: "price_asc" });
+    expect(details.get).toHaveBeenCalledWith(expect.anything(), { property: expect.objectContaining({ type: "property.property", id: "101" }) });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(state.usage).toHaveLength(1);
+    expect([...state.runs.values()].find((run) => run.kind === "execution")?.toolScope).toEqual(["property.search_properties.v1@1", "property.get_property.v1@1"]);
+    expect(state.events.find((event) => event.type === "execution.completed")?.payload).toMatchObject({ inferenceCount: 1, detailServiceLatencyMs: 6 });
+  });
+
+  it("asks for selection on ambiguous detail without model or domain reads", async () => {
+    const fetchMock = vi.fn();
+    const search = { search: vi.fn() } as PropertySearchPort;
+    const details = detailPort();
+    const { repository, state } = memoryRepository();
+    const slice = new PropertySearchPropertiesVerticalSlice(repository, search, details, new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock }), { model: "requested/model" });
+    const turn = await slice.execute(actor(), { conversationId: "123e4567-e89b-42d3-a456-426614174104", message: "Cuéntame más sobre el piso de Barcelona" });
+    expect(turn.result).toMatchObject({ status: "needs_input" });
+    expect(turn.executionRunId).toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(search.search).not.toHaveBeenCalled();
+    expect(details.get).not.toHaveBeenCalled();
+    expect(state.usage).toHaveLength(0);
   });
 
   it("blocks a known cross-tenant or fabricated property ID without model or domain calls", async () => {
@@ -181,7 +278,7 @@ describe("Property Interaction → Execution", () => {
     const { repository } = memoryRepository();
     const conversationId = "123e4567-e89b-42d3-a456-426614174102";
     await repository.createConversation(actor(), { conversationId, title: "AI Chat" });
-    const slice = new PropertySearchPropertiesVerticalSlice(repository, port, new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock }), { model: "requested/model" });
+    const slice = new PropertySearchPropertiesVerticalSlice(repository, port, detailPort(), new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock }), { model: "requested/model" });
     const turn = await slice.execute(actor(), {
       conversationId, message: "Selecciona este inmueble",
       selectedEntityRef: { type: "property.property", id: "852", label: "Cross tenant" },

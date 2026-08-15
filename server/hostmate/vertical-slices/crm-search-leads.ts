@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { ActorContext } from "../contracts/actor-context.js";
 import type { EntityRef } from "../contracts/domain.js";
-import type { AgentContentBlock, ExecutionResult } from "../contracts/execution-result.js";
+import type { EntityListBlock, ExecutionResult } from "../contracts/execution-result.js";
 import type { AgentMessageRecord, ControlPlaneRepository, ConversationContextRefs } from "../control-plane/repository.js";
 import { redactEventPayload } from "../events/contracts.js";
 import { ExecutionDispatchResolver } from "../interaction/dispatch.js";
@@ -153,11 +153,11 @@ function visitsFilters(message: string, lead: EntityRef): ListLeadVisitsInput {
   return { lead: { type: "crm.lead", id: lead.id, label: lead.label, deepLink: lead.deepLink }, scope, status: statusEvidence.find(([pattern]) => pattern.test(value))?.[1] };
 }
 
-function latestEntityList(messages: readonly AgentMessageRecord[], typePrefix?: string): AgentContentBlock | undefined {
+function latestEntityList(messages: readonly AgentMessageRecord[], typePrefix?: string): EntityListBlock | undefined {
   for (const message of [...messages].reverse()) {
     const block = [...(message.blocks ?? [])].reverse().find((candidate) => candidate.type === "entity_list"
       && candidate.items.some((item) => !typePrefix || item.ref.type.startsWith(typePrefix)));
-    if (block) return block;
+    if (block?.type === "entity_list") return block;
   }
   return undefined;
 }
@@ -181,6 +181,11 @@ function isVisitRef(ref: EntityRef | undefined): ref is EntityRef {
 
 function emptyContext(): ConversationContextRefs {
   return { selected: {}, referenced: [] };
+}
+
+function withoutCrmSelection(context: ConversationContextRefs): ConversationContextRefs {
+  const { lead: _lead, visit: _visit, ...otherDomains } = context.selected;
+  return { selected: otherDomains, referenced: context.referenced };
 }
 
 function isEntityRef(value: unknown): value is EntityRef {
@@ -211,7 +216,7 @@ function latestConversationContext(messages: readonly AgentMessageRecord[]): Con
 
 function withSelectedRef(context: ConversationContextRefs, ref: EntityRef | undefined): ConversationContextRefs {
   if (!ref) return context;
-  if (isLeadRef(ref)) return { selected: { lead: ref }, referenced: context.referenced };
+  if (isLeadRef(ref)) return { selected: { ...context.selected, lead: ref }, referenced: context.referenced };
   if (isVisitRef(ref)) return { selected: { ...context.selected, visit: ref }, referenced: context.referenced };
   return context;
 }
@@ -286,7 +291,7 @@ export class CrmSearchLeadsVerticalSlice {
     const priorContext = latestConversationContext(priorMessages);
     const contextualRef = input.selectedEntityRef ?? resolveConversationRef(priorMessages, message);
     let conversationContext = withSelectedRef(
-      hasExplicitLeadTarget(message) && !input.selectedEntityRef ? emptyContext() : priorContext,
+      hasExplicitLeadTarget(message) && !input.selectedEntityRef ? withoutCrmSelection(priorContext) : priorContext,
       contextualRef,
     );
     let messageSequence = (priorMessages.at(-1)?.sequence ?? 0) + 1;
@@ -382,7 +387,6 @@ export class CrmSearchLeadsVerticalSlice {
     const executionRunId = randomUUID();
     const attemptId = randomUUID();
     activeExecutionRunId = executionRunId;
-    activeAttemptId = attemptId;
     await this.repository.createRun(actor, {
       runId: executionRunId, conversationId: input.conversationId, kind: "execution", profileId: "crm",
       profileVersion: dispatch.profile.version, objectiveHash: dispatch.objectiveHash, objectiveRedacted: redactObjective(message),
@@ -402,6 +406,7 @@ export class CrmSearchLeadsVerticalSlice {
     }
 
     await this.repository.createAttempt(actor, { attemptId, runId: executionRunId, attemptNumber: 1, status: "queued", fencingToken: 0 });
+    activeAttemptId = attemptId;
     await this.repository.updateAttempt(actor, { attemptId, expectedStatus: "queued", patch: { status: "running", startedAt: Date.now() } });
     await this.repository.updateRun(actor, executionRunId, { status: "running" }, "queued");
     await event("execution.started", { plan, profile: "crm", profileVersion: dispatch.profile.version, requestedModel: ["context", "visits", "detail", "visits+detail"].includes(plan) ? undefined : this.config.model });
@@ -508,6 +513,7 @@ export class CrmSearchLeadsVerticalSlice {
         });
         conversationContext = {
           selected: {
+            ...conversationContext.selected,
             lead: conversationContext.selected.lead ?? visitDetailOutput.lead?.ref,
             visit: detailRef,
           },
