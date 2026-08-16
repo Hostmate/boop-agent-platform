@@ -114,7 +114,17 @@ Interaction detail muestra árbol bounded parent→children, branch/profile/vers
 
 ## 25. Browser E2E
 
-Staging está desplegado en runtime `multi-agent-spike-20260816-r2`, API/web `multi-agent-spike-20260816-r2` y Convex `different-mockingbird-928`. Los servicios staging convergen 1/1. La sesión de navegador disponible redirige a `/login`; Flows A–G quedan pendientes de una sesión Agent A autenticada. El smoke sintético fue correctamente rechazado por la API interna con 401 porque su sessionId no existía, demostrando fail-closed; no se considera sustituto del browser E2E.
+Staging está desplegado en runtime `multi-agent-spike-20260816-r2`, API/web `multi-agent-spike-20260816-r2` y Convex `different-mockingbird-928`. Los servicios staging convergen 1/1. Flows A–G pasaron con la sesión real Agent A (`tenant=15`, `user=43`):
+
+- A: `Staging Lead A` se seleccionó mediante EntityRef autorizada y se envió el objetivo exacto.
+- B: AI Platform mostró el parent `c70a3ac9-4332-46de-9d60-96a0e44fc8b0` como `running` por Convex realtime antes de finalizar.
+- C: el chat devolvió `partial`: lead autorizado, una próxima visita confirmada y Property no disponible por ausencia de active demand; no hubo búsqueda genérica.
+- D: el detalle mostró `3/3 child runs`, scopes exactos y estados CRM completed, Visits completed y Property partial, con inferencias/tokens/coste a cero.
+- E: tras reload persistieron el parent, el árbol y los tres ToolScopes.
+- F: `Cancelar parent` se pulsó mientras `e9de3c39-4eca-42d7-9080-6eadd4ac3d5a` estaba running. Parent y CRM terminaron cancelled, el árbol quedó `1/3` y no se crearon Visits/Property.
+- G: Chat y Executions midieron `innerWidth=clientWidth=scrollWidth=390` con viewport 390×844; no hubo overflow horizontal. El viewport se restauró después.
+
+El smoke sintético previo fue correctamente rechazado por la API interna con 401 porque su sessionId no existía, demostrando fail-closed; no se usó como sustituto del browser E2E.
 
 ## 26. Security
 
@@ -138,10 +148,11 @@ Tres interacciones concurrentes (dos usuarios del mismo tenant y un usuario de o
 - Handoff/provenance integrity: 100% en corpus estructural.
 - Parallel, partial, cancellation y retry correctness: 100% en pruebas focalizadas.
 - Permission bypass / unauthorized Tool / child spawn / cross-user / cross-tenant: 0.
+- Browser: 7/7 flows; parent/children realtime, persistencia y cancelación verificadas con actor real.
 
 ## 30. Cost/latency
 
-Interaction/decomposition y synthesis son deterministas: cero inferencias, tokens y coste. CRM precede a `max(Visits, Property)` en Multi, frente a suma secuencial en Single. El coste de Control Plane es mayor en Multi por parent + 3 runs/attempts/events. Las muestras OpenRouter previas siguen siendo válidas para los flujos single-agent con modelo `deepseek/deepseek-v4-flash-0731`, reasoning max; este slice no genera tráfico OpenRouter.
+Interaction/decomposition y synthesis son deterministas: cero inferencias, tokens y coste. CRM precede a `max(Visits, Property)` en Multi, frente a suma secuencial en Single. El coste de Control Plane es mayor en Multi por parent + 3 runs/attempts/events. La muestra browser real completó en 2.50 s: CRM 814 ms, Visits 1.05 s y Property 821 ms; estas cifras son una observación E2E, no un SLO estadístico. Las muestras OpenRouter previas siguen siendo válidas para los flujos single-agent con modelo `deepseek/deepseek-v4-flash-0731`, reasoning max; este slice no genera tráfico OpenRouter.
 
 ## 31. Core delta
 
@@ -157,8 +168,8 @@ El modelo determinista evita coste e injection, pero el parent HTTP sigue siendo
 
 ## 34. Blockers
 
-Para cerrar GO faltan únicamente los Flows browser A–G bajo una sesión Agent A real, incluido realtime visible, refresh, cancelación interactiva y viewport 390×844. No hay demanda activa en staging y, por prohibición de writes, no se ha creado una; el E2E correcto será partial y verificará que Property no llama a búsqueda genérica. Producción permanece 0/1 con imagen anterior y no se ha tocado.
+No quedan blockers del compatibility spike. No hay demanda activa en staging y, por prohibición de writes, no se creó una; el E2E partial confirmó que Property no llama a búsqueda genérica. El `0/1` previo de producción se recuperó externamente a `1/1`; conserva su imagen anterior y no se desplegó, reinició ni modificó desde este spike.
 
 ## 35. Recommendation
 
-Conclusión técnica provisional: ADJUST hasta cerrar browser E2E autenticado. Valor de producto: `USE_SELECTIVELY`. Una vez autenticado Agent A, ejecutar A–G sin cambiar datos; si árbol/realtime/cancel/viewport pasan, promover a GO técnico. No abrir writes, Automations, más agents ni nuevas Skills como continuación automática.
+Conclusión técnica: `GO`. Valor de producto: `USE_SELECTIVELY`. Multi-agent aporta scope/authority isolation, branches paralelas, partial completion, cancelación observable y menor latencia controlada para este objetivo compuesto; Single sigue siendo preferible para una Tool, una Skill o secuencias fuertemente acopladas. No abrir writes, Automations, más agents ni nuevas Skills como continuación automática.
