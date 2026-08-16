@@ -1,7 +1,7 @@
 # Boop Skills Adaptation and First Skill
 
 Fecha: 2026-08-15  
-Estado: candidato a GO para uso interno controlado en staging  
+Estado: GO para uso interno controlado en staging
 Baseline Boop auditado: `31979130b1371acd9defbea115279a06c63c1fb4`
 
 ## 1. Estado previo
@@ -50,6 +50,10 @@ explícito, edad mínima de 24 h, lote máximo de 100, preview que crea un plan 
 15 minutos y confirmación exacta para consumirlo una sola vez. No existe purge
 global ni tenant-wide. El borrado del record elimina su embedding asociado
 porque ambos viven en la misma fila. No se ejecutó purge sobre el canary.
+
+El dry-run real de staging para tenant 15/owner 43, edad 30 días, produjo 0
+matches en `pruned`, `archived` y eventos `memory.deleted`; los tres previews
+fueron scope-first, `dryRun=true` y no hubo ejecución de purge.
 
 Retención propuesta para staging: records `pruned` o superseded durante 30 días;
 eventos de Memory durante 90 días; embeddings con el mismo lifecycle del record;
@@ -315,15 +319,32 @@ permission bypass 0, cross-tenant leakage 0 y unauthorized tool exposure 0.
 
 La ejecución determinista hace 0 inferencias, 0 tokens y $0 de coste LLM. La
 latencia es la suma de `get_visit` y el máximo de las dos lecturas downstream,
-más persistencia/control plane. Las cifras reales de staging se recogen en el
-run y en events; no se inventa un promedio a partir de tests.
+más persistencia/control plane. Primera muestra real: 799 ms end-to-end/633 ms
+de Skill; `get_visit` 206 ms y lead context 105 ms. El inmueble estaba ausente y
+no se ejecutó una búsqueda sustitutiva.
+
+Tras tres llamadas OpenRouter reales, el monitor registró timeout rate 0%, p50
+2.385 s, p95/p99 3.634 s, provider StreamLake, modelo
+`deepseek/deepseek-v4-flash-0731` y operación `chat.completions`. El SLO sigue en
+`insufficient_data` hasta 50 muestras.
 
 ## 26. Browser E2E
 
-El gate exige con Agent A: seleccionar una visita autorizada, preparar, validar
-brief, abrir Execution detail, comprobar Skill/version/hash/Tools, refrescar,
-repetir y verificar 390x844. La evidencia de ejecución se registra tras el
-despliegue de staging; producción no se toca.
+PASS con Agent A real, tenant 15/user 43. La visita 458 produjo dos briefs
+parciales seguros porque no contiene property ref; ambos conservaron Visita y
+Lead y señalaron Inmueble no disponible sin search. Runs:
+`6383df35-681c-4b0a-804e-c5eb75f06a89` y
+`4147f104-418d-4c1e-a940-13448baee6e3`.
+
+Execution detail mostró `prepare-visit-brief@1`, hash
+`b7bba7a3504d...`, `visits@1` y las tres Tools exactas. Refresh conservó el
+run; la ejecución se repitió; 390x844 mantuvo `scrollWidth=390`; hubo 0 errores
+de consola.
+
+Desde Executions se hizo logout, se obtuvo login sin pantalla blanca ni
+`ConvexReactClient already closed`, se volvió a autenticar y Memory renderizó
+con un cliente Convex nuevo. La credencial temporal del fixture se revirtió al
+hash original y se revocó la sesión mediante logout.
 
 ## 27. Regressions
 
@@ -334,6 +355,11 @@ verde. Como los cambios no tocan parsing/policy/recall, se conserva como gate la
 
 Hostmate web cubre logout/login con nuevo cliente, CTA/context ref y renderer de
 brief. API y web mantienen lint, tests y builds.
+
+La regresión live de staging pasó CRM search, CRM context, Visits list, Visit
+detail, Property search y Property detail con sus scopes unitarios exactos. Una
+Property ref manual sin provenance fue denegada; search→detail en la misma
+conversación pasó con la ref autorizada, sin writes.
 
 ## 28. Risks
 
@@ -347,15 +373,13 @@ brief. API y web mantienen lint, tests y builds.
 
 ## 29. Blockers
 
-No hay blocker de código conocido para el canary de staging. El GO definitivo
-requiere completar el browser E2E y acumular >=50 observaciones OpenRouter para
-evaluar el SLO; esto último no bloquea el uso interno, solo la declaración de
-cumplimiento del SLO.
+No hay blocker de código conocido para el canary de staging. Faltan >=50
+observaciones OpenRouter para evaluar el SLO y un inventario canónico de owners
+antes de automatizar user/tenant purge; ninguno bloquea el uso interno actual.
 
 ## 30. Recommendation
 
-Si el E2E real queda verde, aprobar Skills V1 para el canary tenant 15/user 43.
-Mantener writes, automatic Memory, tenant Memory, consolidation, automations y
-multi-agent OFF. La siguiente fase recomendada es ampliar el corpus/ventana de
-dogfooding y diseñar una segunda Skill read-only antes de plantear
-orquestación multi-agent.
+Aprobar Skills V1 para el canary tenant 15/user 43. Mantener writes, automatic
+Memory, tenant Memory, consolidation, automations y multi-agent OFF. Acumular
+la ventana de observabilidad y diseñar una segunda Skill read-only antes de
+plantear orquestación multi-agent.
