@@ -53,6 +53,9 @@ export type CreateRunInput = Readonly<{
   objectiveHash: string;
   objectiveRedacted?: string;
   parentRunId?: string;
+  orchestrationId?: string;
+  branchKey?: string;
+  orchestrationDepth?: number;
   dependencyRunIds: readonly string[];
   registryHash: string;
   skillVersions: Readonly<Record<string, number>>;

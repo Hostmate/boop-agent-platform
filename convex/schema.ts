@@ -301,7 +301,7 @@ export default defineSchema({
   agentPlatformRuns: defineTable({
     runId: v.string(), tenantId: v.string(), actorUserId: v.string(), conversationId: v.optional(v.string()),
     kind: v.union(v.literal("interaction"), v.literal("execution")), profileId: v.optional(v.string()), profileVersion: v.optional(v.number()),
-    parentRunId: v.optional(v.string()), dependencyRunIds: v.array(v.string()),
+    parentRunId: v.optional(v.string()), orchestrationId: v.optional(v.string()), branchKey: v.optional(v.string()), orchestrationDepth: v.optional(v.number()), dependencyRunIds: v.array(v.string()),
     status: v.union(v.literal("queued"), v.literal("waiting_dependency"), v.literal("resolving_scope"), v.literal("running"), v.literal("awaiting_confirmation"), v.literal("completed"), v.literal("partial"), v.literal("failed"), v.literal("cancelled"), v.literal("timeout")),
     objectiveHash: v.string(), objectiveRedacted: v.optional(v.string()), registryHash: v.string(), skillVersions: v.any(), skillRefs: v.optional(v.any()), toolScope: v.array(v.string()),
     requestedModel: v.optional(v.string()), resolvedModel: v.optional(v.string()), provider: v.optional(v.string()), finishReason: v.optional(v.string()),

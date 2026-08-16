@@ -22,6 +22,7 @@ import { classifyExplicitMemoryCommand, explicitPropertyOrder } from '../memory/
 import { BoopScopedMemoryRepository, type PropertyOrderRecall } from '../memory/repository.js';
 import { ExplicitUserMemoryVerticalSlice } from '../vertical-slices/explicit-user-memory.js';
 import { createRuntimeSkillExecutor } from '../skills/runtime-dispatcher.js';
+import { classifyOrchestrationIntent, createRuntimeOrchestrationExecutor } from '../orchestration/runtime-dispatcher.js';
 
 const requestSchema = z.object({
   conversationId: z.string().uuid(),
@@ -50,6 +51,11 @@ export type AgentPlatformRuntimeConfig = Readonly<{
   }>;
   skills?: Readonly<{
     enabledSkillIds: readonly ("prepare-visit-brief" | "prepare-lead-brief")[];
+    allowedTenantIds: readonly string[];
+    allowedUserIds: readonly string[];
+  }>;
+  multiAgent?: Readonly<{
+    enabled: boolean;
     allowedTenantIds: readonly string[];
     allowedUserIds: readonly string[];
   }>;
@@ -120,6 +126,16 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
         ...await skill.execute(actor, input),
         controlPlaneWrites: convex.writeMetrics(),
       };
+    }
+    const orchestrationIntent = classifyOrchestrationIntent(input.message);
+    if (orchestrationIntent) {
+      const executor = createRuntimeOrchestrationExecutor(orchestrationIntent, actor, config.multiAgent, {
+        repository,
+        leadContextPort: new HostmateHttpLeadContextPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
+        leadVisitsPort: new HostmateHttpLeadVisitsPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
+        propertySearchPort: new HostmateHttpPropertySearchPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
+      });
+      return { ...await executor.execute(actor, { ...input, priorMessages }), controlPlaneWrites: convex.writeMetrics() };
     }
     const profile = classifyInteractionTurn({ message: input.message, selectedEntityRef: input.selectedEntityRef, priorMessages });
     if (profile === "property") {

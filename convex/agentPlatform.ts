@@ -126,6 +126,7 @@ export const createRun = mutation({
   args: {
     runId: v.string(), conversationId: v.optional(v.string()), kind: v.union(v.literal("interaction"), v.literal("execution")),
     profileId: v.optional(v.string()), profileVersion: v.optional(v.number()), objectiveHash: v.string(), objectiveRedacted: v.optional(v.string()), parentRunId: v.optional(v.string()),
+    orchestrationId: v.optional(v.string()), branchKey: v.optional(v.string()), orchestrationDepth: v.optional(v.number()),
     dependencyRunIds: v.array(v.string()), registryHash: v.string(), skillVersions: v.any(), skillRefs: v.optional(v.any()), toolScope: v.array(v.string()),
     requestedModel: v.optional(v.string()), visibility: v.union(v.literal("user"), v.literal("tenant_admin"), v.literal("platform_admin")),
     ...expectedActorArgs,
@@ -139,6 +140,17 @@ export const createRun = mutation({
     }
     const linkedRunIds = [args.parentRunId, ...args.dependencyRunIds].filter((runId): runId is string => Boolean(runId));
     for (const linkedRunId of linkedRunIds) await ownedTenantRun(ctx, actor.tenantId, actor.userId, linkedRunId);
+    if (args.orchestrationDepth !== undefined && (!Number.isInteger(args.orchestrationDepth) || args.orchestrationDepth < 0 || args.orchestrationDepth > 1)) {
+      throw new ConvexError("ORCHESTRATION_DEPTH_EXCEEDED");
+    }
+    if (args.kind === "execution" && args.orchestrationId && (!args.parentRunId || args.orchestrationDepth !== 1 || !args.branchKey)) {
+      throw new ConvexError("INVALID_ORCHESTRATION_CHILD");
+    }
+    if (args.parentRunId) {
+      const parent = await ownedTenantRun(ctx, actor.tenantId, actor.userId, args.parentRunId);
+      if (parent.kind !== "interaction") throw new ConvexError("CHILD_RUN_CANNOT_SPAWN");
+      if (args.orchestrationId && parent.orchestrationId !== args.orchestrationId) throw new ConvexError("ORCHESTRATION_PARENT_MISMATCH");
+    }
     const now = Date.now();
     const { expectedTenantId: _tenant, expectedUserId: _user, ...input } = args;
     const value = { ...input, tenantId: actor.tenantId, actorUserId: actor.userId, status: "queued" as const, createdAt: now, updatedAt: now };

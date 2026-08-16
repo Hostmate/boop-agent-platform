@@ -23,6 +23,9 @@ export type ExecutionRunRecord = Readonly<{
   profileId?: ExecutionProfileId;
   profileVersion?: number;
   parentRunId?: string;
+  orchestrationId?: string;
+  branchKey?: string;
+  orchestrationDepth?: number;
   dependencyRunIds: readonly string[];
   status: RunStatus;
   objectiveHash: string;

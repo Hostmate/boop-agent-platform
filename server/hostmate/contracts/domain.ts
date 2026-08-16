@@ -30,6 +30,7 @@ export type NormalizedAgentErrorCode =
   | "PRECONDITION_FAILED"
   | "CONFLICT"
   | "RATE_LIMITED"
+  | "NETWORK"
   | "PROVIDER_UNAVAILABLE"
   | "BUDGET_EXCEEDED"
   | "TIMEOUT"

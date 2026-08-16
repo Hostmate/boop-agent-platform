@@ -44,7 +44,25 @@ export type BriefBlock = Readonly<{
   }>[];
 }>;
 
-export type AgentContentBlock = EntityListBlock | EntityDetailBlock | BriefBlock;
+export type MultiAgentSummaryBlock = Readonly<{
+  type: "multi_agent_summary";
+  title: string;
+  status: "complete" | "partial";
+  sections: readonly Readonly<{
+    key: "lead" | "visits" | "properties" | "limitations";
+    title: string;
+    availability: "available" | "unavailable";
+    summary: string;
+    items?: readonly Readonly<{
+      ref?: EntityRef;
+      title: string;
+      subtitle?: string;
+      fields?: readonly Readonly<{ label: string; value: string }>[];
+    }>[];
+  }>[];
+}>;
+
+export type AgentContentBlock = EntityListBlock | EntityDetailBlock | BriefBlock | MultiAgentSummaryBlock;
 
 export type ExecutionResultStatus = "completed" | "partial" | "needs_input" | "failed" | "permission_denied";
 

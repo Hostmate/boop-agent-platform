@@ -50,6 +50,15 @@ function skillsConfig(): NonNullable<Parameters<typeof createAgentPlatformRuntim
   return { enabledSkillIds, allowedTenantIds, allowedUserIds };
 }
 
+function multiAgentConfig(): NonNullable<Parameters<typeof createAgentPlatformRuntimeApp>[0]["multiAgent"]> {
+  const enabled = process.env.AGENT_PLATFORM_MULTI_AGENT_ENABLED === "true";
+  if (!enabled) return { enabled: false, allowedTenantIds: [], allowedUserIds: [] };
+  const allowedTenantIds = idList("AGENT_PLATFORM_MULTI_AGENT_ALLOWED_TENANT_IDS");
+  const allowedUserIds = idList("AGENT_PLATFORM_MULTI_AGENT_ALLOWED_USER_IDS");
+  if (!allowedTenantIds.length || !allowedUserIds.length) throw new Error("Multi-agent canary requires explicit tenant and user allowlists");
+  return { enabled, allowedTenantIds, allowedUserIds };
+}
+
 const port = Number(process.env.AGENT_PLATFORM_RUNTIME_PORT ?? 4310);
 const shutdownTimeoutMs = Number(process.env.AGENT_PLATFORM_SHUTDOWN_TIMEOUT_MS ?? 55_000);
 const convexUrl = process.env.CONVEX_URL?.trim() || required("VITE_CONVEX_URL");
@@ -80,6 +89,7 @@ const app = createAgentPlatformRuntimeApp({
   reasoningEffort: optionalReasoningEffort("AGENT_PLATFORM_REASONING_EFFORT"),
   memory: memoryConfig(),
   skills: skillsConfig(),
+  multiAgent: multiAgentConfig(),
   fallbackModels: process.env.AGENT_PLATFORM_CRM_FALLBACK_MODELS?.split(",").map((value) => value.trim()).filter(Boolean),
   maxConcurrentTurns: Number(process.env.AGENT_PLATFORM_MAX_CONCURRENT_TURNS ?? 8),
   issuer: required('AGENT_PLATFORM_JWT_ISSUER'),
