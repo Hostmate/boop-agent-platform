@@ -42,6 +42,9 @@ import { VisitsCreateVisitVerticalSlice } from '../vertical-slices/visits-create
 import { classifyVisitCancelIntent, VISITS_CANCEL_VISIT_PERMISSION, VISITS_CANCEL_VISIT_TOOL_ID, VISITS_CANCEL_VISIT_TOOL_VERSION } from '../product-tools/visits/cancel-visit.js';
 import { HostmateHttpVisitCancelWritePort } from '../product-tools/visits/hostmate-http-visit-cancel-write-port.js';
 import { VisitsCancelVisitVerticalSlice } from '../vertical-slices/visits-cancel-visit.js';
+import { classifyVisitRescheduleIntent, VISITS_RESCHEDULE_VISIT_PERMISSION, VISITS_RESCHEDULE_VISIT_TOOL_ID, VISITS_RESCHEDULE_VISIT_TOOL_VERSION } from '../product-tools/visits/reschedule-visit.js';
+import { HostmateHttpVisitRescheduleWritePort } from '../product-tools/visits/hostmate-http-visit-reschedule-write-port.js';
+import { VisitsRescheduleVisitVerticalSlice } from '../vertical-slices/visits-reschedule-visit.js';
 
 const requestSchema = z.object({
   conversationId: z.string().uuid(),
@@ -107,7 +110,7 @@ export type AgentPlatformRuntimeConfig = Readonly<{
 export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig) {
   const app = express();
   const openRouterTelemetry = new OpenRouterTelemetryMonitor();
-  const capabilities = ["crm.search_leads.v1", "crm.get_lead_context.v1", "visits.list_lead_visits.v1", "visits.get_visit.v1", "property.search_properties.v1", "property.get_property.v1", "skill.prepare-visit-brief.v1", "skill.prepare-lead-brief.v1", "crm.update_lead_status.v1", "crm.add_lead_note.v1", "tasks.create_task.v1", "visits.create_visit.v1", "visits.cancel_visit.v1"] as const;
+  const capabilities = ["crm.search_leads.v1", "crm.get_lead_context.v1", "visits.list_lead_visits.v1", "visits.get_visit.v1", "property.search_properties.v1", "property.get_property.v1", "skill.prepare-visit-brief.v1", "skill.prepare-lead-brief.v1", "crm.update_lead_status.v1", "crm.add_lead_note.v1", "tasks.create_task.v1", "visits.create_visit.v1", "visits.cancel_visit.v1", "visits.reschedule_visit.v1"] as const;
   const maxConcurrentTurns = Math.max(1, Math.floor(config.maxConcurrentTurns ?? 8));
   let activeTurns = 0;
   const verifyActorToken = config.verifyActorToken ?? (
@@ -140,6 +143,19 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
     const classificationStartedAt = performance.now();
     const memoryCommand = classifyExplicitMemoryCommand(input.message);
     const classificationMs = performance.now() - classificationStartedAt;
+    const visitRescheduleIntent = classifyVisitRescheduleIntent({ message: input.message, timezone: actor.timezone });
+    if (visitRescheduleIntent.kind !== "none") {
+      const writePort = new HostmateHttpVisitRescheduleWritePort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal);
+      return {
+        ...await new VisitsRescheduleVisitVerticalSlice(repository, writePort, config.safeWrites ?? {
+          enabled: false, allowedTenantIds: [], allowedUserIds: [], signingSecret: "disabled-disabled-disabled-disabled",
+        }).execute(actor, {
+          conversationId: input.conversationId, message: input.message, selectedEntityRef: input.selectedEntityRef,
+          candidate: visitRescheduleIntent.kind === "reschedule" ? visitRescheduleIntent.candidate : undefined,
+          issue: visitRescheduleIntent.kind === "needs_input" ? visitRescheduleIntent.reason : undefined,
+        }), controlPlaneWrites: convex.writeMetrics(),
+      };
+    }
     const visitCancelIntent = classifyVisitCancelIntent(input.message);
     if (visitCancelIntent.kind !== "none") {
       const writePort = new HostmateHttpVisitCancelWritePort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal);
@@ -311,6 +327,11 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
         toolId: VISITS_CANCEL_VISIT_TOOL_ID, toolVersion: VISITS_CANCEL_VISIT_TOOL_VERSION,
         requiredPermission: VISITS_CANCEL_VISIT_PERMISSION, operationType: "update", operation: "visit.cancel",
         commit: (actor, intent) => new HostmateHttpVisitCancelWritePort(config.hostmateApiBaseUrl, token, fetch, requestId).commit(actor, { signedIntent: intent }),
+      },
+      {
+        toolId: VISITS_RESCHEDULE_VISIT_TOOL_ID, toolVersion: VISITS_RESCHEDULE_VISIT_TOOL_VERSION,
+        requiredPermission: VISITS_RESCHEDULE_VISIT_PERMISSION, operationType: "update", operation: "visit.reschedule",
+        commit: (actor, intent) => new HostmateHttpVisitRescheduleWritePort(config.hostmateApiBaseUrl, token, fetch, requestId).commit(actor, { signedIntent: intent }),
       },
     ]);
   }
