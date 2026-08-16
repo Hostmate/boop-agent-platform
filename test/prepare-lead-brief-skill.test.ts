@@ -6,6 +6,7 @@ import { isPrepareLeadBriefIntent } from "../server/hostmate/interaction/turn-cl
 import type { LeadContextPort } from "../server/hostmate/product-tools/crm/get-lead-context.js";
 import { PrepareLeadBriefVerticalSlice } from "../server/hostmate/skills/prepare-lead-brief.js";
 import { SkillRegistry } from "../server/hostmate/skills/registry.js";
+import { runtimeSkillEnabled } from "../server/hostmate/skills/runtime-dispatcher.js";
 
 function actor(permissions = ["crm.read"]) {
   return createActorContext({
@@ -91,6 +92,14 @@ describe("prepare-lead-brief registry and selection", () => {
     expect(registry.resolve({ ...base, profileId: "visits", eligibleSkillIds: [] })).toEqual([]);
     expect(registry.resolve({ ...base, availableToolCapabilities: [] })).toEqual([]);
   });
+
+  it("fails closed outside the runtime tenant/user canary intersection", () => {
+    const config = { enabledSkillIds: ["prepare-lead-brief" as const], allowedTenantIds: ["15"], allowedUserIds: ["43"] };
+    expect(runtimeSkillEnabled("prepare-lead-brief", { tenantId: "15", userId: "43" }, config)).toBe(true);
+    expect(runtimeSkillEnabled("prepare-lead-brief", { tenantId: "16", userId: "43" }, config)).toBe(false);
+    expect(runtimeSkillEnabled("prepare-lead-brief", { tenantId: "15", userId: "44" }, config)).toBe(false);
+    expect(runtimeSkillEnabled("prepare-visit-brief", { tenantId: "15", userId: "43" }, config)).toBe(false);
+  });
 });
 
 describe("prepare-lead-brief deterministic execution", () => {
@@ -160,7 +169,7 @@ describe("prepare-lead-brief deterministic execution", () => {
     expect(lead.getContext).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ lead: expect.objectContaining({ type: "crm.lead", id: "123" }) }));
   });
 
-  it("fails closed for gate, permission changes, stale refs and cross-tenant locators", async () => {
+  it("fails closed for gate, permission changes and manual refs lacking valid tenant provenance", async () => {
     const disabledRepo = memoryRepository();
     const disabledLead = leadPort();
     const disabled = await new PrepareLeadBriefVerticalSlice(disabledRepo.repository, disabledLead.port, false).execute(actor(), {

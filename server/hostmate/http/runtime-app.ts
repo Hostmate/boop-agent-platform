@@ -21,8 +21,7 @@ import { randomUUID } from 'node:crypto';
 import { classifyExplicitMemoryCommand, explicitPropertyOrder } from '../memory/policy.js';
 import { BoopScopedMemoryRepository, type PropertyOrderRecall } from '../memory/repository.js';
 import { ExplicitUserMemoryVerticalSlice } from '../vertical-slices/explicit-user-memory.js';
-import { PrepareVisitBriefVerticalSlice } from '../skills/prepare-visit-brief.js';
-import { PrepareLeadBriefVerticalSlice } from '../skills/prepare-lead-brief.js';
+import { createRuntimeSkillExecutor } from '../skills/runtime-dispatcher.js';
 
 const requestSchema = z.object({
   conversationId: z.string().uuid(),
@@ -50,8 +49,7 @@ export type AgentPlatformRuntimeConfig = Readonly<{
     consolidationEnabled: false;
   }>;
   skills?: Readonly<{
-    prepareVisitBriefEnabled: boolean;
-    prepareLeadBriefEnabled: boolean;
+    enabledSkillIds: readonly ("prepare-visit-brief" | "prepare-lead-brief")[];
     allowedTenantIds: readonly string[];
     allowedUserIds: readonly string[];
   }>;
@@ -111,25 +109,13 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
     }
     const briefSkillIntent = classifyBriefSkillIntent(input.message);
     if (briefSkillIntent) {
-      const canaryAllowed = Boolean(
-        config.skills?.allowedTenantIds.includes(actor.tenantId)
-        && config.skills.allowedUserIds.includes(actor.userId),
-      );
-      const skillEnabled = canaryAllowed && Boolean(
-        briefSkillIntent === "prepare-visit-brief"
-          ? config.skills?.prepareVisitBriefEnabled
-          : config.skills?.prepareLeadBriefEnabled,
-      );
       const leadContextPort = new HostmateHttpLeadContextPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal);
-      const skill = briefSkillIntent === "prepare-visit-brief"
-        ? new PrepareVisitBriefVerticalSlice(
-            repository,
-            new HostmateHttpVisitDetailPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
-            leadContextPort,
-            new HostmateHttpPropertyDetailPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
-            skillEnabled,
-          )
-        : new PrepareLeadBriefVerticalSlice(repository, leadContextPort, skillEnabled);
+      const skill = createRuntimeSkillExecutor(briefSkillIntent, actor, config.skills, {
+        repository,
+        leadContextPort,
+        visitDetailPort: new HostmateHttpVisitDetailPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
+        propertyDetailPort: new HostmateHttpPropertyDetailPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
+      });
       return {
         ...await skill.execute(actor, input),
         controlPlaneWrites: convex.writeMetrics(),

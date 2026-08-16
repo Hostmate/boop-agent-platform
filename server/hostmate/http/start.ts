@@ -37,13 +37,17 @@ function memoryConfig(): NonNullable<Parameters<typeof createAgentPlatformRuntim
 function skillsConfig(): NonNullable<Parameters<typeof createAgentPlatformRuntimeApp>[0]["skills"]> {
   const prepareVisitBriefEnabled = process.env.AGENT_PLATFORM_SKILLS_PREPARE_VISIT_BRIEF_ENABLED === "true";
   const prepareLeadBriefEnabled = process.env.AGENT_PLATFORM_SKILLS_PREPARE_LEAD_BRIEF_ENABLED === "true";
+  const enabledSkillIds = [
+    ...(prepareVisitBriefEnabled ? ["prepare-visit-brief" as const] : []),
+    ...(prepareLeadBriefEnabled ? ["prepare-lead-brief" as const] : []),
+  ];
   if (!prepareVisitBriefEnabled && !prepareLeadBriefEnabled) {
-    return { prepareVisitBriefEnabled: false, prepareLeadBriefEnabled: false, allowedTenantIds: [], allowedUserIds: [] };
+    return { enabledSkillIds, allowedTenantIds: [], allowedUserIds: [] };
   }
   const allowedTenantIds = idList("AGENT_PLATFORM_SKILLS_ALLOWED_TENANT_IDS");
   const allowedUserIds = idList("AGENT_PLATFORM_SKILLS_ALLOWED_USER_IDS");
   if (!allowedTenantIds.length || !allowedUserIds.length) throw new Error("Skills canary requires explicit tenant and user allowlists");
-  return { prepareVisitBriefEnabled, prepareLeadBriefEnabled, allowedTenantIds, allowedUserIds };
+  return { enabledSkillIds, allowedTenantIds, allowedUserIds };
 }
 
 const port = Number(process.env.AGENT_PLATFORM_RUNTIME_PORT ?? 4310);
