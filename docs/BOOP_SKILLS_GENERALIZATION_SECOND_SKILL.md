@@ -113,7 +113,7 @@ Agent A passed: lead selection → lead brief; refresh → repeated lead brief; 
 
 Representative lead trace: 302.3 ms Skill time, 77.7 ms root Tool, 446 ms execution envelope, 0 inference, 0 input/output tokens and $0. Representative visit trace: 547.9 ms Skill time, 130.4 ms root Tool, 92.1 ms lead read, property skipped because no ref, 663 ms envelope, 0 inference, 0 tokens and $0. Independent visit downstream reads use `Promise.allSettled` when both refs exist.
 
-The current 15-minute OpenRouter window contains one real mobile-QA search sample: DeepSeek V4 Flash via StreamLake, 3,589 ms, zero timeouts. The initial SLO remains `insufficient_data` at 1/50; no synthetic traffic was generated.
+The browser validation window captured one real mobile-QA search sample: DeepSeek V4 Flash via StreamLake, 3,589 ms, zero timeouts. The monitor is intentionally in-memory and reset when the final `r2` runtime image rolled out; its fresh window is now 0/50 and `insufficient_data`. No synthetic traffic was generated.
 
 ## 24. Regressions
 
@@ -121,7 +121,7 @@ The six read-only Product Tools remain advertised and covered by the full suite.
 
 ## 25. Tests
 
-Boop: typecheck, runtime build and full Vitest suite pass. Hostmate: lint, shared/web/API Vitest suites, targeted Agent Platform UI tests and build pass; integration tests requiring external fixtures remain skipped by their existing guards. Remote staging liveness/readiness are 200 with zero active turns and both Skill capabilities advertised.
+Boop: typecheck, runtime build and full Vitest suite pass. Hostmate: lint, shared/web/API Vitest suites, targeted Agent Platform UI tests and build pass; integration tests requiring external fixtures remain skipped by their existing guards. Remote staging liveness/readiness are 200 with zero active turns and both Skill capabilities advertised. A post-rollout authenticated API run against the final `r2` image returned a partial generic brief with zero errors.
 
 ## 26. Core delta
 
@@ -129,7 +129,7 @@ No changes were made to `server/execution-agent.ts`, `server/runtimes/claude.ts`
 
 ## 27. Risks
 
-The OpenRouter SLO has only 1/50 samples in the current in-memory window and remains observational, not a release gate for deterministic Skills. The staging image is local to the VPS because the Docker Hub namespace rejected push authorization. The production service was not updated: its image and update timestamp predate this staging deployment; it independently reported 0/1 during final read-only observation and was deliberately not touched.
+The OpenRouter SLO has 0/50 samples in the fresh `r2` in-memory window (one real sample was observed before rollout) and remains observational, not a release gate for deterministic Skills. The staging image is local to the VPS because the Docker Hub namespace rejected push authorization. The production service was not updated: its image and update timestamp predate this staging deployment; it independently reported 0/1 during final read-only observation and was deliberately not touched.
 
 ## 28. Recommendation on multi-agent
 
