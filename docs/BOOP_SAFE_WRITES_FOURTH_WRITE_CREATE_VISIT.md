@@ -1,304 +1,141 @@
-# Boop Safe Writes V4 — Visit Creation Domain Compatibility Spike
+# Boop Safe Writes V4 — `visits.create_visit.v1@1`
 
-## 1. Objetivo
+## 1. Domain readiness
 
-Auditar si `visits.create_visit.v1@1` puede ser la cuarta Safe Write sin reducir las garantías ya demostradas por Status, Note y Task. El spike concluye `ADJUST`: no se registra, implementa, activa ni despliega la capability porque el dominio actual no ofrece una frontera canónica que combine creación individual, restricciones transaccionales y side effects controlados.
+`VISITS_DOMAIN_HARDENING: GO` fue revalidado antes de implementar. `prepareVisitCreate` es la autoridad read-only y `commitVisitCreate` repite resolución y restricciones con datos frescos. Web, API y preview consumen esas primitives. El commit toma locks estables `tenant + agent + day`, reevalúa HARD dentro de la transacción, resuelve una Opportunity exacta, duración y elegibilidad canónicas, inserta efectos internos de forma atómica, y solo después despacha el outbox. La idempotencia de dominio está respaldada por `RE_Visit_Creation_Requests`.
 
-## 2. Visit domain audit
+## 2. Agent Platform contract
 
-La auditoría cubrió `RE_Visits`, `RE_Visit_Events`, booking tokens, property slots, visitas grupales, rutas/controllers, `visit.service.ts`, `booking.service.ts`, routing, duración, calendarios, reminders, WhatsApp, notificaciones, opportunity lifecycle y UI manual. La conclusión no se basa en las Tools read-only del Agent Platform.
+La capability final es `visits.create_visit.v1@1`, `mode=draft`, `operationType=create`, `operation=visit.create`. V1 solo crea una visita individual. Group Visit, recurrencia, batch, reschedule, cancel, update, múltiples leads, múltiples inmuebles y múltiples agentes responden `needs_input`/unsupported; nunca se reconducen silenciosamente.
 
-Hallazgos determinantes:
+## 3. Ownership and profile
 
-- `POST /api/v2/visits` es el flujo manual actual y exige `requireRole('admin')`.
-- `visitService.createManual` es el servicio de dominio existente, pero inserta antes de varios side effects y no comprueba disponibilidad ni solapamientos.
-- `POST /api/v2/visits/preview-routing` calcula solapamiento, buffer y viaje, pero solo alimenta un banner informativo.
-- `CreateVisitModal` permite pulsar «Crear visita» aun cuando el preview responde `state=block`.
-- no existe lock, nivel serializable, constraint UNIQUE/exclusion ni claim de recurso que proteja dos Drafts distintos para el mismo intervalo.
-- una creación manual auto-confirmada puede crear notificaciones, evento de Google Calendar con asistente externo, WhatsApp y reminder.
+Owner `visits`, profile `visits@1`, ToolScope exacto `[visits.create_visit.v1@1]`. No se añadió ninguna otra Tool ni se expuso la capability a Skills o Multi-Agent.
 
-## 3. Canonical models
+## 4. Permission and risk
 
-El modelo individual canónico es Prisma `ReVisits`, tabla `RE_Visits`. Guarda `visit_datetime DATETIME`, `duration_minutes`, `agent_id`, `status`, snapshots del inmueble y cliente, `opportunity_id`, `slot_id`, `token` y `google_event_id`.
+La Policy de producto sigue siendo admin-only: administradores del tenant y superadmin con tenant efectivo. Un agente normal conserva DENY. No existe `visits.write` nuevo y `crm.write` no se usa como autoridad del dominio. El Tool exige `visits.read` para acceder al contexto, pero `actorAllowed` y el backend exigen rol canónico admin/superadmin. Riesgo `R2`, porque el plan puede incluir Calendar, WhatsApp y reminder. Confirmación humana es siempre obligatoria.
 
-No existen columnas `lead_id` ni `property_id` en `RE_Visits`. La atribución fuerte de una visita individual a Lead e inmueble se realiza mediante `opportunity_id`; `property_ref`, `property_title`, `property_address`, `client_name` y `client_phone` son snapshots, no EntityRefs de autoridad.
+## 5. Provenance
 
-`RE_Visit_Events` es un modelo aparte para eventos de lifecycle, especialmente reprogramación/cambio de estado. `createManual` no crea una fila `visit_created` en esta tabla.
+Prepare exige Lead `crm.lead` y Property `property.property` seleccionadas desde resultados o detalle previos de la misma conversación. Un mensaje del usuario, un ID manual, teléfono, referencia libre, snapshot o “último” elemento no otorgan provenance. La Preparation Engine soporta ahora relaciones múltiples y verifica que cada EntityRef aparezca en un mensaje assistant autorizado. El backend reautoriza ambas referencias en Prepare y Confirm.
 
-## 4. Individual vs group
+## 6. Temporal
 
-Individual y Group Visit son modelos y flujos distintos. Individual usa `RE_Visits`. El flujo grupal legacy usa `RE_Group_Visits` y `RE_Group_Visit_Registrations`; además, la arquitectura más nueva unifica capacidad pública mediante `RE_Property_Slots` y múltiples filas `RE_Visits` enlazadas por `slot_id`.
+`VisitCandidate` contiene exclusivamente `startDate`, `startTime`, `startAtUtc`, `timezone`, `temporalPhrase`, `referenceTime` e `inference=0`. Se reutiliza el parser determinista de Tasks, extendido a offsets escritos `un/uno/dos/tres` y `one/two/three`. Soporta hoy/mañana, weekdays, fecha ISO o DD/MM/YYYY, offsets y hora exacta en ES/CA/EN. “mañana”, dayparts y “a las 8” quedan ambiguos. No hay parsing LLM.
 
-Una V1 individual puede definirse conceptualmente sin Group Visit, pero la reserva/capacidad basada en slots y la convivencia de dos arquitecturas grupales impiden asumir que cualquier fecha para un inmueble es un recurso individual libre. Group Visit queda fuera de scope y no se reconduce a individual.
+## 7. Opportunity
 
-## 5. Current manual creation flow
+Agent Platform nunca recibe ni elige `opportunityId`. El backend envía Lead + Property autorizados a Visits con `assignment.kind=opportunity`. El dominio resuelve exactamente una Opportunity del tenant, `crm_scope=inmueble`, no merged y sin commercial outcome. Cero produce `OPPORTUNITY_NOT_FOUND`, más de una `OPPORTUNITY_AMBIGUOUS` y cualquier cambio respecto al Draft `OPPORTUNITY_MISMATCH`/stale.
 
-Flujo real: `CreateVisitModal` → `POST /api/v2/visits` → `visitService.createManual`.
+## 8. Duration
 
-Con `opportunity_id`, el servicio:
+La duración no viene del usuario ni del modelo. Visits resuelve override de inmueble, setting uniforme, setting por clase o fallback canónico. Prepare proyecta minutos, fuente y clase en el intent firmado. Confirm recalcula y una diferencia genera `VISIT_PRECONDITION_FAILED`; nunca se confirma una duración distinta de la mostrada.
 
-1. resuelve una Opportunity tenant-scoped, activa, no fusionada y `crm_scope=inmueble`;
-2. deriva Lead e inmueble de esa Opportunity;
-3. exige Lead no borrado con teléfono e inmueble no borrado con referencia;
-4. valida, si existe, un `agent_id` activo del tenant;
-5. inserta `RE_Visits` directamente;
-6. ejecuta notificación, Calendar, asociación Lead↔Property, mensajes de sistema/funnel y avance de Opportunity;
-7. si el comercial elegido es el actor creador, usa status `confirmed` y ejecuta confirmation effects.
+## 9. Property eligibility
 
-Sin `opportunity_id` existe un path legacy por referencia de inmueble y último Lead por teléfono. Ese path es ambiguo e inaceptable para una write basada en EntityRefs.
+Agent Platform no replica listas de estados. `prepareVisitCreate` y `commitVisitCreate` aplican `assertPropertyEligibleForVisit`: estado canónico `activo`, no borrada y `accepts_visit_presencial`. Un cambio entre Prepare y Confirm vuelve stale el Draft y no crea Visit.
 
-## 6. Relations
+## 10. HARD and advisory constraints
 
-Para una futura capability segura, Lead y Property deberán llegar como EntityRefs seleccionadas y autorizadas. El backend deberá resolver exactamente una Opportunity activa, no fusionada, del mismo tenant, con ese `lead_id` y `property_id`. Si no existe o hay más de una, la operación debe responder `needs_input`/conflict, nunca inferir por teléfono, referencia o visita histórica.
+HARD conserva exactamente la autoridad Visits: instante válido/futuro, elegibilidad, tipo presencial y solapamiento intervalar del mismo agente. Advisory conserva `TRAVEL_BUFFER` y `EXTERNAL_CALENDAR_BUSY`; un advisory se muestra y permite Confirm. Un HARD en Prepare no produce Draft confirmable. Confirm vuelve a evaluar HARD bajo lock.
 
-La relación persistida sería `RE_Visits.opportunity_id`; los datos de Lead/Property se copiarían como snapshots mediante el servicio de dominio. No se acepta ID manual, referencia libre ni búsqueda automática durante la write.
+## 11. Prepare
 
-## 7. Permissions
+La ruta interna `/visits/prepare-visit` aplica gate, actor admin/superadmin y acceso Lead/Property, valida el instante canónico y llama una sola vez a `prepareVisitCreate`. Product Data permanece sin cambios. El resultado contiene Opportunity, Agent, duración, status inicial, constraints y plan real de efectos.
 
-La creación manual actual es admin-only. `requireRole('admin')` no concede acceso al rol `agent`; el superadmin efectivo debe operar bajo una identidad/ruta compatible con la policy de producto. El token actual del Agent Platform concede `visits.read`, pero no existe un permiso canónico `visits.write`; el canary Safe Writes solo añade `crm.write` a actores allowlisted.
+## 12. WriteIntent
 
-Decisión: no inventar `visits.write`, no reutilizar `crm.write` como equivalencia y no ampliar Agent. Una futura implementación necesita una decisión explícita de producto y un permiso canónico respaldado por la misma policy que la UI/API.
+Se reutiliza `WriteIntentEnvelope`; no existe `VisitDraft`. El target es Lead y `relatedEntities` contiene Property. El payload firmado incluye Opportunity, Agent, instante, timezone, duración/fuente/clase, status inicial, snapshot HARD, advisories y planes atómico/post-commit/externo. También liga actor, tenant, sesión, permissionsVersion, profile, Tool/version, ToolScope, TTL y hash de argumentos.
 
-## 8. Risk
+## 13. Side effects
 
-`R1` solo sería defendible para una creación interna reversible y sin comunicaciones externas. El flujo canónico actual puede enviar una invitación de Google Calendar al email del Lead (`sendUpdates=externalOnly`), WhatsApp de confirmación y programar un reminder, además de mutar CRM. Por tanto, sin separación explícita, la operación es como mínimo `R2` dentro de la taxonomía existente.
+La card lista solo efectos planificados. Siempre muestra creación interna; Calendar aparece con agente; WhatsApp y reminder solo cuando el status inicial canónico es `confirmed`. Los efectos internos obligatorios quedan dentro de la transacción. Calendar, WhatsApp y reminder se materializan como comandos `RE_Visit_Create_Effects` y se despachan después del commit.
 
-No se asigna riesgo final a una capability inexistente. La recomendación es separar primero `create internal visit` de `notify client`, con contrato de dominio explícito; después reclasificar.
+## 14. Confirmation
 
-## 9. Side effects
+`action_confirmation` se reutiliza sin crear `visit_confirmation`. Muestra Lead, inmueble, fecha, hora, duración, comercial, status, warnings y acciones posteriores. Cancelar es terminal. La frase “confírmala tú” se elimina solo del parse temporal y aun así produce Draft pendiente.
 
-| Side effect | Manual Visit | Agent Visit V1 | decisión del spike |
-| --- | --- | --- | --- |
-| Visit row | Sí | No implementado | requiere frontera transaccional |
-| Visit Event | No en `createManual` | No implementado | no inventarlo |
-| Lead update/association | Sí, asociación + mensajes | No implementado | conservar solo vía dominio |
-| Opportunity | Sí, `visit_scheduled` | No implementado | debe ser atómico o recuperable |
-| Booking Token | No | No | no añadir |
-| Notification | `visit_created`; también `visit_confirmed` | No implementado | side effect interno conocido |
-| WhatsApp | Sí si auto-confirm y template listo | Prohibido en V1 sin decisión | STOP externo |
-| Email | No email directo | No | Calendar puede invitar por email |
-| Reminder | Sí si auto-confirm | Prohibido sin diseño | STOP diferido/externo |
-| Calendar | Best effort si hay agente; puede invitar Lead | Prohibido sin diseño | STOP externo |
-| Analytics/funnel | Fila `RE_Lead_Messages` `visit_request` | No implementado | side effect conocido |
+## 15. Confirm recheck
 
-## 10. Scheduling
+Confirm carga el Draft canónico, valida token, firma, mismo actor, tenant, session lineage, permissionsVersion, TTL, feature gate y Policy. Reautoriza Lead y Property y llama `/visits/commit-visit`. El backend valida de nuevo HMAC/args/preconditions y `commitVisitCreate` resuelve fresh Opportunity, Agent, duración, status, elegibilidad, side-effect plan y HARD constraints.
 
-`RE_Visits` guarda un único inicio (`visit_datetime`) y una duración; no guarda `end_datetime`. El final se deriva como inicio + duración. Puede haber visita sin agente (`floating`) y el schema permite `visit_datetime` nullable, aunque la creación manual exige fecha/hora. El modelo individual no tiene FK obligatoria a Property o Lead, y el path legacy permite crear sin relación fuerte.
+## 16. TOCTOU
 
-La V1 propuesta exigiría Lead, Property, agente server-controlled, fecha y hora exactas, pero esa V1 no se activa mientras no haya enforcement canónico de restricciones.
+Prueba staging: Prepare libre, inserción controlada de otra Visit solapada y Confirm. Resultado `DRAFT_STALE`/constraint failure, cero Visit adicional y cero efecto externo del Draft. El lock estable y el recheck transaccional cierran la carrera.
 
-## 11. Conflicts
+## 17. Concurrency
 
-El dominio contiene una regla explícita en routing: el solapamiento con otra visita nunca se relaja. `checkHardFilters` también contempla buffer y viaje entre inmuebles diferentes y permite back-to-back en el mismo inmueble.
+Dos Drafts distintos del mismo agente a 17:00–18:00 y 17:30–18:30, confirmados concurrentemente: exactamente uno committed y uno `VISIT_CONSTRAINT_FAILED`. Dos recursos independientes con agentes distintos: dos commits. No existe lock global; solo se serializan días/agentes que comparten recurso.
 
-Sin embargo, esa regla no se aplica en `createManual`; el preview puede fallar abierto si no puede leer datos y el submit ignora `block`. El booking público comprueba en varios paths coincidencia exacta de hora, no siempre solapamiento por intervalos, y tampoco encapsula check+insert con una garantía de concurrencia. Por ello las reglas observadas son inconsistentes entre presentación, creación manual y reserva pública.
+## 18. Idempotency
 
-## 12. Availability
+El UUID del Draft es la idempotency key de dominio. `RE_Agent_Write_Commits` se reclama y adjunta dentro de la misma transacción que Visit, internals y outbox. Double click, replay y lost response devuelven el mismo Visit. Prueba concurrente: una Visit, un Agent receipt y una unidad de cada comando de efecto.
 
-Routing puede consultar visitas del agente, configuración de routing, coordenadas, buffers, viaje y busy externo de Google Calendar. Property slots exponen capacidad para reservas públicas. No existe una única función canónica `assertVisitCanBeCreated` usada por Prepare y por commit.
+## 19. Outbox
 
-La disponibilidad de inmueble tampoco está unificada: booking rechaza `desactivado`, `vendido`, `reservado` y `alquilado`; `createManual` solo exige `deleted_at=null`. El spike no elige una regla nueva.
+`RE_Visit_Create_Effects` tiene clave única por Visit/effect, claim de estado y contador de intentos. El dispatcher no ve filas antes del DB commit. En fixture sin proveedores: Calendar y WhatsApp quedaron `skipped` observables; reminder `succeeded`. Replay y nuevo dispatch no duplicaron comandos ni reminder. El recovery runner existe; staging mantiene cron OFF.
 
-## 13. Duration
+## 20. Resulting EntityRef
 
-`RE_Visits.duration_minutes` tiene default 60. `visit-duration.service.ts` puede resolver override por inmueble, modo tenant uniforme o por clase, con defaults por clase y fallback exportado 30. Booking usa slot → resolver property/tenant → legacy 60.
+Commit devuelve `{type:"visits.visit", id}` y la taxonomía visible es `visits.visit:<id>`. No se creó un tipo paralelo.
 
-`createManual` no llama al resolver, no persiste una duración explícita y crea Calendar con 60 minutos fijos. No hay por tanto un valor canónico único para la creación manual. Una futura V1 no puede inventar 30/60; antes debe alinearse el servicio manual con una sola resolución server-side y firmar el valor final.
+## 21. UI
 
-## 14. Timezone
+La UI generalizó `action_confirmation` con `warnings` y `sideEffects`. No renderiza efectos ausentes. La prueba React cubre una tarjeta R2 de Visit, labels finales, warnings y acciones reales. El shell fue actualizado de tres a cuatro Safe Writes.
 
-La agenda de Visits usa `DATETIME` como wall-clock local de España. `parseVisitWallClockDateTime`, los formatters wall-clock y `visitWallClockToInstant` aplican `Europe/Madrid`. El serializador HTTP evita tratar esos campos como instantes UTC ordinarios.
+## 22. AI Platform
 
-Una futura write deberá firmar fecha, hora, zona e instante resuelto, rechazar horas DST inexistentes y no reinterpretar lenguaje natural al confirmar. El spike no modifica esta primitive.
+Runs y eventos registran `visits.create_visit.v1@1`, `visits@1`, ToolScope unitario, R2, refs, payload firmado, constraints Prepare, lifecycle y resultado. `write.committed` proyecta EntityRef y detalles de efectos. Tokens, HMAC y secretos no se exponen. El parse Visit informa inferencia/tokens/coste cero.
 
-## 15. Capability contract
+## 23. Realtime
 
-Contrato recomendado, no registrado:
+Convex conserva Draft y transiciones `proposed`, `cancelled`, `stale`, `failed`, `committed`; refresh/session rotation mantiene el Draft. Confirm concurrente espera el lease corto y devuelve terminal idempotente. Side-effect details se guardan con el resultado de commit y en el evento visible.
 
-```text
-visits.create_visit.v1@1
-owner=visits
-profile=visits@1
-mode=draft
-ToolScope=[visits.create_visit.v1@1]
-operationType=create
-operation=visit.create
-```
+## 24. Security
 
-Input futuro: Lead EntityRef seleccionada + Property EntityRef seleccionada + `VisitCandidate`. Sin búsquedas, IDs, tenant, agente, status, Opportunity, side-effect flags ni auto-confirm aportados por el modelo.
+HMAC-SHA256 usa JSON canónico y compare timing-safe. Lead, Property, Opportunity, Agent, datetime, duración, status, efectos, TTL, actor, session, tenant, permissionsVersion y args están firmados. Tampering, cross-user, cross-tenant, permission change, stale references y auto-confirm fallan antes de Product Data.
 
-## 16. Provenance
+## 25. Evaluation corpus
 
-Lead y Property deben provenir de `contextRefs.selected` o de EntityRefs explícitas con provenance vigente. Prepare debe autorizar ambas dentro del tenant, internalizar IDs y resolver la Opportunity. Confirm debe repetir autorización, assignment del Lead, estado del inmueble y relación Opportunity. Snapshots y referencias comerciales no sustituyen provenance.
+`evals/safe-writes/visits-create-visit-v1.ts` genera 200 escenarios (50 ground-truth templates × 4 variantes) dentro del objetivo 180–240. Cubre ES/CA/EN, temporal/ambigüedad, provenance, Opportunity, Property, constraints, concurrencia, lifecycle, seguridad y side effects.
 
-## 17. VisitCandidate
+## 26. Metrics
 
-Contrato mínimo futuro:
+Cada escenario declara `shouldDraft`, risk, Lead, Property, Opportunity, Agent, start, duration, HARD, advisories, plan, Confirm, Visit/receipt/effect counts. Tests: Draft precision 100%, temporal accuracy 100%, ambiguity 100%, Prepare/Confirm constraint accuracy 100%; mutation pre-confirm, unauthorized Visit, duplicate Visit/receipt/effect, invalid HARD commit, cross-user/tenant, tamper, permission bypass, auto-confirm y direct-LLM commit: cero.
 
-```ts
-type VisitCandidate = {
-  startDate: string;       // YYYY-MM-DD
-  startTime: string;       // HH:mm exacto
-  startAtUtc: string;      // instante resuelto y verificable
-  timezone: "Europe/Madrid";
-  temporalPhrase: string;
-  referenceTime: string;
-  inference: 0;
-};
-```
+## 27. Browser E2E
 
-Duration, assignee, Opportunity, status y constraints son server-authoritative y no deben entrar desde el LLM. La duración solo se añadirá al payload estructurado después de que el dominio defina un resolver único.
+El harness live de staging ejecutó A–J contra el mismo API/runtime/Convex desplegado: Draft sin mutación, cancel, commit, refresh, double click, TOCTOU, Property stale, assignment stale, advisory visible y hora ambigua. La UI real de staging se inspeccionó en Chrome; 390×844 tuvo `scrollWidth=390`, sin overflow. La tarjeta real se cubre además por test de componente con payload R2; la sesión Chrome disponible era un agente normal y confirmó correctamente DENY para creación admin-only.
 
-## 18. Temporal reuse
+## 28. Concurrent-Draft proof
 
-El parser determinista de Tasks puede reutilizar fechas relativas, weekdays, fechas explícitas, hora 24 h, zona y ambigüedad. Visits exige hora exacta: «mañana» y «mañana por la tarde» deben dar `needs_input`. No se acepta daypart, AM/PM ambiguo, pasado, batch, recurring ni reschedule. Parsing/inference no se implementaron porque el spike paró antes del vertical slice.
+La suite de esquema MySQL completo pasó 6/6 en `realestate_staging`: same-agent different-Draft produjo 1 commit + 1 conflict; different-agent produjo 2 commits; same-Draft produjo una Visit + un receipt; fallo del receipt hizo rollback de todas las filas.
 
-## 19. Safe Write reuse
+## 29. Side-effect proof
 
-Si se desbloquea el dominio, se reutilizarían Registry, Preparation Engine, WriteIntent, hashing, HMAC, Draft lifecycle, actor/session/version, confirmation, fencing, receipts, events, realtime, `action_confirmation` y AI Platform. El motor actual no es el bloqueo.
+Fixtures `example.test`, números no reales y tenant sintético, sin conexiones de proveedores. No se hizo llamada externa antes de commit. Calendar/WhatsApp/reminder nacieron del outbox. Los no conectados fueron `skipped` y reminder fue único. Replay del dominio no recreó filas; el dispatcher no volvió a reclamar efectos terminales.
 
-No se modificó ninguna primitive genérica porque el requisito nuevo —reserva concurrente de un recurso temporal— debe resolverse primero en el dominio Visits, no dentro de Convex ni mediante idempotencia del Draft.
+## 30. Cleanup
 
-## 20. WriteIntent
+La prueba restauró password del admin, assignment, estado Property y Opportunity. Eliminó Visits, reminders, effect rows, notifications, mensajes/historial/funnel, relationships, receipts, creation requests, locks, entidades y usuarios sintéticos. Readback staging: Leads 0, Properties 0, Agents 0, Visits 0, Agent receipts 0 y orphan effects 0. Todos los Drafts creados quedaron terminales.
 
-No hubo cambios. Un futuro intent tendría `target`/relations para Lead y Property, payload con valores temporales y defaults resueltos, y preconditions de assignment, Opportunity, Property, Agent, duration/config y constraints. El hash/HMAC deberá cubrir todos esos campos y el TTL.
+## 31. Regressions
 
-No se añade ahora un `constraintFingerprint` genérico: un snapshot ayuda a explicar el Draft, pero no sustituye el recheck transaccional.
+Runtime completo: 35 files/218 tests. API: 149 files, 1397 passed y 50 skipped. Web: 36 files/174 tests. Shared: 249 tests. Lead Status, Lead Note, Task, seis reads, dos Skills, Explicit User Memory y `lead.analyze_opportunities` permanecen verdes.
 
-## 21. Signing
+## 32. Safe Write reuse
 
-La firma actual es suficiente en estructura: canonicalization, SHA-256, HMAC-SHA256 y compare timing-safe. Para Visits debería cubrir EntityRefs, IDs internalizados, Opportunity, agente server-side, datetime, duración, defaults, side-effect mode, preconditions, operation y expiry. Confirm debe rechazar cualquier alteración antes de tocar Product Data.
+Safe Writes aporta intent, security binding, confirmation, lifecycle, receipt e idempotency cross-system. La única generalización necesaria fue relaciones múltiples, provenance assistant-only, riesgo configurable y proyección de detalles. No contiene scheduling, Opportunity, duración, elegibilidad ni efectos Visits.
 
-## 22. Constraints Prepare
+## 33. Boop reuse and Core delta
 
-Modelo futuro: comprobar Lead/Property/Opportunity, agente activo, estado de inmueble, duración resuelta, fecha futura, horario/slot y reglas de solapamiento/buffer/viaje. El resultado sería un snapshot informativo firmado, no una reserva.
+Interaction/Execution Agent, profiles, registries, Policy, ActorContext, EntityRefs, events, Convex y AI Platform se reutilizan. Los cambios están bajo `server/hostmate`; archivos Boop Core, Memory, Skills y Multi-Agent: cero. El ajuste R2 aclara que una Tool `mode=draft` prepara de forma read-only y que la confirmación pertenece al commit separado.
 
-Estado actual: no implementable con precisión 100%, porque no hay una única autoridad de disponibilidad y `createManual` no consume el preview.
+## 34. Production blockers
 
-## 23. Constraints Confirm
+Producción no fue desplegada, migrada ni habilitada. Staging usa runtime `visit-safe-write-20260816-r1` y API/Web `visit-safe-write-20260816-r2`, ambos 1/1 y con crons OFF. Antes de producción, el recovery runner del Visit outbox debe conectarse a un worker/cron dedicado; no se deben activar todos los crons del proceso web.
 
-Confirm debería repetir toda autorización y constraint con datos frescos dentro de la misma frontera de commit. El preview de routing no sirve como Confirm recheck: es un endpoint admin de UX, puede quedar disabled/fail-open, busca alternativas y no bloquea el insert.
+## 35. Recommendation
 
-Estado actual: no existe un path canónico que revalide y cree de forma indivisible.
-
-## 24. TOCTOU
-
-El caso «Prepare libre → otra visita ocupa el intervalo → Confirm» no está protegido. Volver a llamar al preview antes del insert seguiría dejando una carrera entre check e insert. Draft idempotency solo protege el mismo Draft; no serializa dos Drafts diferentes.
-
-Esta ausencia activa explícitamente una STOP condition. No se ejecutó un E2E que pretendiera certificar una propiedad que el esquema no puede garantizar.
-
-## 25. Concurrency
-
-Estrategias válidas a evaluar en una fase de producto/dominio:
-
-- transaction `SERIALIZABLE` con recheck y retry bien probado;
-- lock estable de recurso `(tenant, agent, day)` antes del overlap query;
-- tabla/claim de intervalos con constraint apropiado;
-- primitive canónica ya adoptada por property slots.
-
-MySQL no ofrece una exclusion constraint de rangos equivalente a PostgreSQL de forma directa. La elección debe pertenecer a Visits y cubrir duración, status activos, slots, grupos y recursos externos. No se construyó un scheduling engine general.
-
-## 26. Preconditions
-
-Preconditions futuras mínimas: Lead existente/no borrado/no fusionado y assignment esperado; Property existente/visible/estado esperado; una Opportunity única y activa; actor-agent mapping activo; duración/config esperadas; datetime futuro; status inicial y side-effect mode; constraint snapshot explicable. Todas deben reautorizarse en Confirm.
-
-## 27. Deterministic commit
-
-Path requerido, aún inexistente:
-
-```text
-Signed Draft → actor/session/version → Policy → Lead + Property + Opportunity
-→ duration/time validation → lock resource → constraints fresh
-→ idempotency claim → canonical Visit service → Visit/CRM effects/receipt
-→ commit → post-commit effects explicitly classified
-```
-
-El LLM no participaría en Confirm. `createManual` no cumple hoy esta secuencia.
-
-## 28. Transaction boundary
-
-`createManual` hace un `prisma.reVisits.create` y después múltiples operaciones independientes. Si notificación, asociación o lifecycle fallan, puede quedar una Visit parcial; Calendar/WhatsApp/reminder son best effort y externos. Tampoco incluye el receipt del Agent Platform.
-
-Antes del GO se necesita un Domain Service con una transacción que abarque al menos constraint lock/recheck, Visit, side effects internos obligatorios y `RE_Agent_Write_Commits`. Los efectos externos deben ser post-commit/outbox, visibles y con su propia idempotencia, o quedar fuera de V1 por contrato de producto.
-
-## 29. Idempotency
-
-`RE_Agent_Write_Commits` ya resuelve double click, replay, lost response y concurrencia del mismo Draft para otras Safe Writes. Se reutilizaría. El servicio manual actual no acepta idempotency key ni receipt.
-
-No se certifica idempotencia de Visit porque no existe implementación. En particular, un receipt no evita dos Visits de dos Drafts distintos que compiten por el mismo intervalo.
-
-## 30. Result EntityRef
-
-La taxonomía canónica ya existe: `{ type: "visits.visit", id }`, presentada como `visits.visit:<id>`. No debe crearse `crm.visit` ni una entidad Draft paralela. No se emitió ninguna EntityRef nueva durante el spike.
-
-## 31. Failure recovery
-
-Una futura implementación deberá fallar antes del insert para firma, actor, tenant, permission, provenance y preconditions inválidas; marcar stale en assignment/property/slot; recuperar same-Draft desde receipt; y no intentar compensar un mensaje externo ya enviado borrando la Visit. La necesidad de una política/outbox de efectos externos es precisamente uno de los bloqueos.
-
-## 32. Confirmation UI
-
-`action_confirmation` es reutilizable. El Draft futuro debería mostrar Lead, inmueble, fecha, hora, duración, comercial, constraint snapshot, riesgo y cada side effect externo. No se crea `visit_confirmation`.
-
-No se añadió renderer porque no hay capability activable; enseñar una confirmación incompleta ocultaría WhatsApp/Calendar/reminder y sería inseguro.
-
-## 33. AI Platform
-
-Sin implementación no aparece `visits.create_visit.v1` en Inventory, runs ni Drafts. Una versión futura deberá exponer profile/ToolScope/risk/operation, EntityRefs, temporal final, constraint Prepare/Confirm, lifecycle, Visit result, side effects, latencia, tokens, inference y coste.
-
-## 34. Realtime
-
-El lifecycle actual soporta proposed/cancelled/stale/failed/committed y sería reutilizable. No se emitieron eventos Visit ni se creó Draft. Refresh no se probó para esta capability porque el spike se detuvo antes de registro/Prepare.
-
-## 35. Evaluation corpus
-
-No se generó el corpus de 160–220 casos: hacerlo antes de fijar las reglas canónicas produciría ground truth inventado. El futuro corpus deberá cubrir targets, temporal, duración, roles, constraints, lifecycle, idempotencia y seguridad con expected Visit/receipt/side effects explícitos.
-
-## 36. Metrics
-
-No hay métricas de precisión, latencia o concurrencia de una capability inexistente. Los únicos resultados verificables son estáticos: mutation-before-confirm=0, unauthorized Visit=0, duplicate Visit=0, duplicate receipt=0 e invalid conflict commit=0 durante este spike, porque no se ejecutó ninguna write.
-
-No se presentan esos ceros como prueba de seguridad funcional.
-
-## 37. Browser E2E
-
-No ejecutado. Los flows A–J requieren una implementación segura. La UI manual sí fue auditada en código y demuestra que el banner `block` no deshabilita submit; esto basta para descartar su reutilización como constraint gate. No se tocaron fixtures ni staging.
-
-## 38. Cleanup
-
-No hubo Product Data, Drafts, receipts, Visits, Events, cambios de assignment/property ni side effects sintéticos que limpiar. Repositorios de integración conservan los cambios deliberados de documentación únicamente. Producción permanece intacta.
-
-## 39. Regressions
-
-No cambió runtime, Hostmate API/Web, Convex, registry, Tools, Skills, Memory ni Multi-Agent. Por tanto Task, Lead Note, Lead Status, seis reads, dos Skills, Explicit User Memory y `lead.analyze_opportunities` quedan sin delta de esta fase. Se ejecutarán sus gates completos cuando exista una implementación Visit que pueda afectarlos.
-
-## 40. LOC/generalization
-
-Visit-specific production LOC: 0. Generic Safe Write LOC modified: 0. Temporal/constraint helper LOC: 0. Core Boop files modified: 0. Backend/frontend reuse porcentual: no medible sin implementación.
-
-`CONSTRAINT_AWARE_WRITE_GENERALIZATION=NOT_GENERALIZED`: no es un fallo del Safe Write Engine; la generalización no puede certificarse hasta que el dominio ofrezca constraint recheck y commit concurrente seguros.
-
-## 41. Core delta
-
-Core Boop, provider routing, OpenRouter, model configuration, Convex schema/functions, approval lifecycle y confirmation UI: sin cambios. Hostmate Product Data/API/Web: sin cambios. Solo se añade este informe de compatibilidad.
-
-## 42. Production blockers
-
-Bloqueos para un nuevo spike:
-
-1. definir una única regla canónica de conflicto (interval overlap, estados, buffer/viaje, Google busy y slots);
-2. alinear creación manual, preview y booking con esa autoridad;
-3. elegir y probar locking/transaction para dos Drafts distintos;
-4. unificar duración manual y booking;
-5. definir estado válido del inmueble;
-6. resolver Lead+Property a una Opportunity única;
-7. separar o hacer explícitos Calendar invitation, WhatsApp y reminder;
-8. crear permiso/policy canónicos sin ampliar Agent silenciosamente;
-9. hacer Visit + side effects internos + receipt atómicos o recuperables.
-
-No hay migración ni deploy de staging/producción en esta fase.
-
-## 43. Recommendation
-
-Resultado: `ADJUST`. No implementar `visits.create_visit.v1@1` todavía. La siguiente fase recomendada no es otra capability: es un hardening del dominio Visits que introduzca `prepareManualCreate`/`commitManualCreate` (nombres por decidir), una primitive de constraint transaccional y un modo de side effects explícito compartido por Web/API y Agent Platform.
-
-Safe Writes no están listos para `reschedule_visit` ni `cancel_visit`: ambas operaciones heredan más side effects y reglas de lifecycle. Tras cerrar los bloqueos, repetir este mismo compatibility spike y solo entonces construir el corpus/E2E. No implementar una quinta write.
+`CONSTRAINT_AWARE_WRITE_GENERALIZATION: GENERALIZED`. La cuarta Safe Write demuestra composición limpia: Safe Write Engine gobierna intención/confirmación/seguridad/idempotencia/lifecycle y Visits Domain gobierna relaciones/duración/scheduling/concurrencia/side effects. Recomendación: cerrar primero el worker dedicado del outbox y después iniciar una fase exclusivamente semántica para evaluar reschedule/cancel; no implementar aún una quinta write.

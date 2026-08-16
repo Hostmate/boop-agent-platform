@@ -23,8 +23,6 @@ export type PolicyInput = Readonly<{
   confirmedDraftId?: string;
 }>;
 
-const riskRank: Record<RiskLevel, number> = { R0: 0, R1: 1, R2: 2, R3: 3 };
-
 export interface PolicyEngine {
   evaluate(input: PolicyInput): PolicyDecision;
 }
@@ -40,7 +38,11 @@ export class DefaultPolicyEngine implements PolicyEngine {
     // Draft preparation is the non-mutating safety boundary. Product writes
     // and external effects always require a separately confirmed draft; high
     // risk operations retain the same requirement even in future modes.
-    if (input.mode === "write" || input.mode === "external" || riskRank[input.risk] >= riskRank.R2) {
+    // A draft Tool is read-only preparation even when the eventual operation
+    // is R2/R3. Confirmation is enforced by the separate, non-Tool commit
+    // path; requiring a confirmed draft here would make safe preparation
+    // impossible for higher-risk actions.
+    if (input.mode === "write" || input.mode === "external") {
       if (!input.confirmedDraftId) {
         return { effect: "require_confirmation", reason: "signed_draft_required", decisionId: input.decisionId };
       }

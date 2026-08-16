@@ -6,6 +6,7 @@ export type SafeWriteCommitResult = Readonly<{
   outcome: "committed";
   idempotent: boolean;
   entity?: EntityRef;
+  details?: Readonly<Record<string, unknown>>;
 }>;
 
 export type SafeWriteCommitErrorCode = "NOT_FOUND" | "PERMISSION_DENIED" | "STALE_REFERENCE" | "PRECONDITION_FAILED" | "CONFLICT";

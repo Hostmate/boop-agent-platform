@@ -123,8 +123,11 @@ function resolveDate(token: string, now: Date, timezone: string): string | undef
   const today = localDate(now, timezone);
   if (/^(hoy|today|avui)$/.test(value)) return isoDate(today);
   if (/^(manana|tomorrow|dema)$/.test(value)) return isoDate(addDays(today, 1));
-  const offset = value.match(/^(?:en|dentro de|in|within|d'aqui)\s+(\d{1,3})\s+(?:dias?|days?|dies)$/);
-  if (offset) return isoDate(addDays(today, Number(offset[1])));
+  const offset = value.match(/^(?:en|dentro de|in|within|d'aqui)\s+(\d{1,3}|un|uno|dos|tres|one|two|three)\s+(?:dias?|days?|dies)$/);
+  if (offset) {
+    const words: Record<string, number> = { un: 1, uno: 1, one: 1, dos: 2, two: 2, tres: 3, three: 3 };
+    return isoDate(addDays(today, words[offset[1]!] ?? Number(offset[1])));
+  }
   const iso = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   const slash = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   if (iso || slash) {
@@ -140,7 +143,7 @@ function resolveDate(token: string, now: Date, timezone: string): string | undef
   return undefined;
 }
 
-const DATE_TOKEN = String.raw`(?:hoy|mañana|manana|avui|today|tomorrow|demà|dema|(?:en|dentro de|in|within|d'aquí|d'aqui)\s+\d{1,3}\s+(?:días?|dias?|days?|dies)|\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4}|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|monday|tuesday|wednesday|thursday|friday|saturday|sunday|dilluns|dimarts|dimecres|dijous|divendres|dissabte|diumenge)`;
+const DATE_TOKEN = String.raw`(?:hoy|mañana|manana|avui|today|tomorrow|demà|dema|(?:en|dentro de|in|within|d'aquí|d'aqui)\s+(?:\d{1,3}|un|uno|dos|tres|one|two|three)\s+(?:días?|dias?|days?|dies)|\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4}|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|monday|tuesday|wednesday|thursday|friday|saturday|sunday|dilluns|dimarts|dimecres|dijous|divendres|dissabte|diumenge)`;
 const TEMPORAL = new RegExp(`\\b(${DATE_TOKEN})(?:\\s*(?:,|\\s)*(?:a\\s+las|a\\s+les|at)\\s*(\\d{1,2})(?::(\\d{2}))?)?\\s*[.!]?\\s*$`, "iu");
 const TASK_PREFIX = /^\s*(?:crea(?:me)?|crear|añade|anade|programa|apunta|recuérdame|recuerdame|afegeix|crea(?:'m)?|create|add|schedule|remind me)\s+(?:(?:una|a)\s+)?(?:tarea|task|recordatorio|reminder)\b\s*/iu;
 

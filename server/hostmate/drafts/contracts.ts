@@ -48,6 +48,8 @@ export type WriteIntentEnvelope = Readonly<{
   toolVersion: number;
   toolScope: readonly string[];
   target: EntityRef;
+  /** Additional authority-bound entities required by relational writes. */
+  relatedEntities?: readonly EntityRef[];
   operationType: "update" | "create";
   operation: string;
   requestedValue: string;

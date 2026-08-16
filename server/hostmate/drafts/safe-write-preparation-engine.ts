@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { ActorContext } from "../contracts/actor-context.js";
-import type { EntityRef, ExecutionProfileId } from "../contracts/domain.js";
+import type { EntityRef, ExecutionProfileId, RiskLevel } from "../contracts/domain.js";
 import type { ActionConfirmationBlock, ExecutionResult } from "../contracts/execution-result.js";
 import type { AgentMessageRecord, ControlPlaneRepository, ConversationContextRefs } from "../control-plane/repository.js";
 import { redactEventPayload } from "../events/contracts.js";
@@ -37,6 +37,7 @@ export type SafeWriteTurnResult = Readonly<{
 
 export type PreparedWriteProjection = Readonly<{
   target: EntityRef;
+  relatedEntities?: readonly EntityRef[];
   operationType: "update" | "create";
   operation: string;
   requestedValue: string;
@@ -55,15 +56,18 @@ export type SafeWritePreparationDefinition<TInput, TPrepared> = Readonly<{
   requiredPermission: string;
   selectedContextKey: string;
   selectedEntityType: string;
+  requiredContextRefs?: readonly Readonly<{ contextKey: string; entityType: string; missingMessage: string }>[];
+  requireConversationProvenance?: boolean;
+  risk?: Exclude<RiskLevel, "R0">;
   // Heterogeneous concrete tool definitions are erased at the registry edge;
   // each tool still parses its own strict schema before its handler runs.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   tool: any;
-  missingInputMessage(input: SafeWriteTurnInput<TInput>, selected?: EntityRef): string | undefined;
-  toolInput(value: TInput, selected: EntityRef): Record<string, unknown>;
+  missingInputMessage(input: SafeWriteTurnInput<TInput>, selected?: EntityRef, context?: ConversationContextRefs): string | undefined;
+  toolInput(value: TInput, selected: EntityRef, context: ConversationContextRefs): Record<string, unknown>;
   parsePrepared(value: unknown): TPrepared;
-  project(value: TInput, selected: EntityRef, prepared: TPrepared): PreparedWriteProjection;
-  toolStartedPayload(value: TInput, selected: EntityRef): Record<string, unknown>;
+  project(value: TInput, selected: EntityRef, prepared: TPrepared, context: ConversationContextRefs): PreparedWriteProjection;
+  toolStartedPayload(value: TInput, selected: EntityRef, context: ConversationContextRefs): Record<string, unknown>;
   toolCompletedPayload(prepared: TPrepared): Record<string, unknown>;
   actorAllowed?(actor: ActorContext): boolean;
   noOp?(value: TInput, prepared: TPrepared): string | undefined;
@@ -79,6 +83,24 @@ function redact(value: string): string {
 function latestContext(messages: readonly AgentMessageRecord[]): ConversationContextRefs {
   for (const message of [...messages].reverse()) if (message.contextRefs) return message.contextRefs;
   return { selected: {}, referenced: [] };
+}
+
+function sameRef(left: EntityRef | undefined, right: EntityRef): boolean {
+  return left?.type === right.type && left.id === right.id;
+}
+
+export function hasConversationEntityProvenance(messages: readonly AgentMessageRecord[], ref: EntityRef): boolean {
+  return messages.some((message) => {
+    if (message.role !== "assistant") return false;
+    if (message.contextRefs?.referenced.some((candidate) => sameRef(candidate, ref))) return true;
+    if (Object.values(message.contextRefs?.selected ?? {}).some((candidate) => sameRef(candidate, ref))) return true;
+    return message.blocks?.some((block) => {
+      if (block.type === "entity_list") return block.items.some((item) => sameRef(item.ref, ref));
+      if (block.type === "entity_detail") return sameRef(block.ref, ref);
+      if (block.type === "multi_agent_summary") return block.sections.some((section) => section.items?.some((item) => item.ref && sameRef(item.ref, ref)));
+      return false;
+    }) ?? false;
+  });
 }
 
 export function compactEntityRefForWriteIntent(ref: EntityRef): EntityRef {
@@ -103,12 +125,13 @@ export class SafeWritePreparationEngine<TInput, TPrepared> {
     try { prior = await this.repository.listMessages(actor, { conversationId: input.conversationId, limit: 200 }); }
     catch { await this.repository.createConversation(actor, { conversationId: input.conversationId, title: "AI Chat" }); prior = []; }
     const previousContext = latestContext(prior);
-    const selected = input.selectedEntityRef?.type === this.definition.selectedEntityType
-      ? input.selectedEntityRef
-      : previousContext.selected[this.definition.selectedContextKey];
-    const context: ConversationContextRefs = selected?.type === this.definition.selectedEntityType
-      ? { selected: { ...previousContext.selected, [this.definition.selectedContextKey]: selected }, referenced: previousContext.referenced }
+    const inputRole = input.selectedEntityRef?.type === this.definition.selectedEntityType
+      ? this.definition.selectedContextKey
+      : this.definition.requiredContextRefs?.find((required) => required.entityType === input.selectedEntityRef?.type)?.contextKey;
+    const context: ConversationContextRefs = input.selectedEntityRef && inputRole
+      ? { selected: { ...previousContext.selected, [inputRole]: input.selectedEntityRef }, referenced: previousContext.referenced }
       : previousContext;
+    const selected = context.selected[this.definition.selectedContextKey];
     let messageSequence = (prior.at(-1)?.sequence ?? 0) + 1;
     await this.repository.appendMessage(actor, {
       messageId: randomUUID(), conversationId: input.conversationId, role: "user", contentRedacted: redact(input.message),
@@ -121,7 +144,15 @@ export class SafeWritePreparationEngine<TInput, TPrepared> {
     });
     await this.repository.updateRun(actor, interactionRunId, { status: "running" }, "queued");
 
-    const missing = this.definition.missingInputMessage(input, selected);
+    const requiredMissing = this.definition.requiredContextRefs?.find((required) => context.selected[required.contextKey]?.type !== required.entityType);
+    const provenanceRefs = [selected, ...(this.definition.requiredContextRefs ?? []).map((required) => context.selected[required.contextKey])]
+      .filter((ref): ref is EntityRef => Boolean(ref));
+    const provenanceMissing = this.definition.requireConversationProvenance
+      ? provenanceRefs.find((ref) => !hasConversationEntityProvenance(prior, ref))
+      : undefined;
+    const missing = requiredMissing?.missingMessage
+      ?? (provenanceMissing ? "La selección no tiene provenance autorizada en esta conversación. Vuelve a seleccionar el resultado desde una card." : undefined)
+      ?? this.definition.missingInputMessage(input, selected, context);
     if (missing || input.value === undefined || !selected || selected.type !== this.definition.selectedEntityType) {
       const summary = missing ?? "Selecciona primero una entidad autorizada; no puedo escribir usando un ID manual.";
       const result: ExecutionResult = { status: "needs_input", summary, entities: selected ? [selected] : [], errors: [], suggestedNext: [summary] };
@@ -134,7 +165,7 @@ export class SafeWritePreparationEngine<TInput, TPrepared> {
       || !this.config.allowedUserIds.includes(actor.userId)
       || (this.definition.actorAllowed && !this.definition.actorAllowed(actor))
       || (!actor.isSuperAdmin && !actor.permissions.includes(this.definition.requiredPermission))) {
-      const summary = "La preparación de cambios CRM no está habilitada para este actor.";
+      const summary = "La preparación de esta acción no está habilitada para este actor.";
       const result: ExecutionResult = { status: "permission_denied", summary, entities: [selected], errors: [{ code: "PERMISSION_DENIED", message: "safe_write_canary_denied", retryable: false }] };
       await this.repository.updateRun(actor, interactionRunId, { status: "failed", errorCode: "PERMISSION_DENIED", resultSummary: summary, completedAt: Date.now() }, "running");
       await this.repository.appendMessage(actor, { messageId: randomUUID(), conversationId: input.conversationId, role: "assistant", contentRedacted: summary, contextRefs: context, sequence: messageSequence, createdAt: Date.now() });
@@ -147,7 +178,7 @@ export class SafeWritePreparationEngine<TInput, TPrepared> {
       request: {
         profileId: this.definition.profileId, objective: input.message,
         objectiveClasses: [this.definition.objectiveClass], objectiveCapabilities: [this.definition.capability],
-        inputRefs: [selected], dependencyRunIds: [], internalSkillHints: [], constraints: { readOnly: false },
+        inputRefs: provenanceRefs, dependencyRunIds: [], internalSkillHints: [], constraints: { readOnly: false },
       },
     });
     if (!dispatch.toolResolution.tools[0]) throw new Error(`SAFE_WRITE_TOOL_UNAVAILABLE:${dispatch.toolResolution.rejected[0]?.reason ?? "unknown"}`);
@@ -170,12 +201,12 @@ export class SafeWritePreparationEngine<TInput, TPrepared> {
       sequence: ++eventSequence, type, visibility: "user", payload: redactEventPayload(payload), occurredAt: Date.now(),
     });
     await event("execution.started", { profile: this.definition.profileId, profileVersion: 1, toolScope, inference: 0 });
-    await event("tool.started", { toolId: this.definition.toolId, ...this.definition.toolStartedPayload(input.value, selected) });
+    await event("tool.started", { toolId: this.definition.toolId, ...this.definition.toolStartedPayload(input.value, selected, context) });
     const tools = toolRegistry.compileRuntimeTools({
       resolved: dispatch.toolResolution, actor, policy: new DefaultPolicyEngine(), profileId: this.definition.profileId,
       decisionId: () => randomUUID(), hasRequiredPreconditions: () => true,
     });
-    const response = await tools[0]!.handle(this.definition.toolInput(input.value, selected));
+    const response = await tools[0]!.handle(this.definition.toolInput(input.value, selected, context));
     if (!response.success) throw new Error("SAFE_WRITE_PREPARATION_FAILED");
     const parsed = JSON.parse(response.text) as { ok: true; data: unknown };
     const prepared = this.definition.parsePrepared(parsed.data);
@@ -191,7 +222,7 @@ export class SafeWritePreparationEngine<TInput, TPrepared> {
       return { conversationId: input.conversationId, interactionRunId, executionRunId, result };
     }
 
-    const projection = this.definition.project(input.value, selected, prepared);
+    const projection = this.definition.project(input.value, selected, prepared, context);
     // Signed intents must survive a JSON/Convex round-trip byte-for-byte at
     // the canonical-data level. Optional EntityRef fields with `undefined`
     // are omitted explicitly before signing because JSON drops them.
@@ -204,11 +235,13 @@ export class SafeWritePreparationEngine<TInput, TPrepared> {
       permissionsVersion: actor.permissionsVersion, effectiveTenantOverride: actor.effectiveTenantOverride,
       conversationId: input.conversationId, sourceRunId: executionRunId, profileId: this.definition.profileId,
       toolId: this.definition.toolId, toolVersion: this.definition.toolVersion, toolScope,
-      target: signedTarget, operationType: projection.operationType, operation: projection.operation,
+      target: signedTarget,
+      ...(projection.relatedEntities?.length ? { relatedEntities: projection.relatedEntities.map(compactEntityRefForWriteIntent) } : {}),
+      operationType: projection.operationType, operation: projection.operation,
       requestedValue: projection.requestedValue,
       ...(projection.structuredPayload ? { structuredPayload: projection.structuredPayload } : {}),
       preconditions: projection.preconditions,
-      argsHash: hashDraftArguments(projection.args), idempotencyKey: `agent-write:${draftId}`, risk: "R1",
+      argsHash: hashDraftArguments(projection.args), idempotencyKey: `agent-write:${draftId}`, risk: this.definition.risk ?? "R1",
       policyDecisionId: randomUUID(), expiresAt: now + (this.config.ttlMs ?? 10 * 60_000),
       confirmationTokenHash: hashConfirmationToken(confirmationToken),
     };
@@ -223,7 +256,7 @@ export class SafeWritePreparationEngine<TInput, TPrepared> {
     });
     const block: ActionConfirmationBlock = {
       type: "action_confirmation", draftId, confirmationToken, target: signedTarget,
-      ...projection.block, risk: "R1", expiresAt: envelope.expiresAt,
+      ...projection.block, risk: envelope.risk, expiresAt: envelope.expiresAt,
     };
     const result: ExecutionResult = { status: "needs_input", summary: this.definition.preparedSummary, entities: [signedTarget], blocks: [block], errors: [], suggestedNext: ["Confirmar o cancelar el borrador."] };
     await this.repository.appendMessage(actor, { messageId: randomUUID(), conversationId: input.conversationId, role: "assistant", contentRedacted: this.definition.preparedSummary, blocks: [block], contextRefs: context, runId: executionRunId, sequence: messageSequence, createdAt: now });

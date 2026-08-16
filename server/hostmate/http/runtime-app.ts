@@ -36,6 +36,9 @@ import { SafeWriteCommitError, SafeWriteCommitRegistry } from '../drafts/safe-wr
 import { classifyTaskWriteIntent, TASKS_CREATE_TASK_PERMISSION, TASKS_CREATE_TASK_TOOL_ID, TASKS_CREATE_TASK_TOOL_VERSION } from '../product-tools/tasks/create-task.js';
 import { HostmateHttpTaskWritePort } from '../product-tools/tasks/hostmate-http-task-write-port.js';
 import { TasksCreateTaskVerticalSlice } from '../vertical-slices/tasks-create-task.js';
+import { classifyVisitWriteIntent, VISITS_CREATE_VISIT_PERMISSION, VISITS_CREATE_VISIT_TOOL_ID, VISITS_CREATE_VISIT_TOOL_VERSION } from '../product-tools/visits/create-visit.js';
+import { HostmateHttpVisitWritePort } from '../product-tools/visits/hostmate-http-visit-write-port.js';
+import { VisitsCreateVisitVerticalSlice } from '../vertical-slices/visits-create-visit.js';
 
 const requestSchema = z.object({
   conversationId: z.string().uuid(),
@@ -101,7 +104,7 @@ export type AgentPlatformRuntimeConfig = Readonly<{
 export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig) {
   const app = express();
   const openRouterTelemetry = new OpenRouterTelemetryMonitor();
-  const capabilities = ["crm.search_leads.v1", "crm.get_lead_context.v1", "visits.list_lead_visits.v1", "visits.get_visit.v1", "property.search_properties.v1", "property.get_property.v1", "skill.prepare-visit-brief.v1", "skill.prepare-lead-brief.v1", "crm.update_lead_status.v1", "crm.add_lead_note.v1", "tasks.create_task.v1"] as const;
+  const capabilities = ["crm.search_leads.v1", "crm.get_lead_context.v1", "visits.list_lead_visits.v1", "visits.get_visit.v1", "property.search_properties.v1", "property.get_property.v1", "skill.prepare-visit-brief.v1", "skill.prepare-lead-brief.v1", "crm.update_lead_status.v1", "crm.add_lead_note.v1", "tasks.create_task.v1", "visits.create_visit.v1"] as const;
   const maxConcurrentTurns = Math.max(1, Math.floor(config.maxConcurrentTurns ?? 8));
   let activeTurns = 0;
   const verifyActorToken = config.verifyActorToken ?? (
@@ -134,6 +137,20 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
     const classificationStartedAt = performance.now();
     const memoryCommand = classifyExplicitMemoryCommand(input.message);
     const classificationMs = performance.now() - classificationStartedAt;
+    const visitWriteIntent = classifyVisitWriteIntent({ message: input.message, timezone: actor.timezone });
+    if (visitWriteIntent.kind !== "none") {
+      const writePort = new HostmateHttpVisitWritePort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal);
+      return {
+        ...await new VisitsCreateVisitVerticalSlice(repository, writePort, config.safeWrites ?? {
+          enabled: false, allowedTenantIds: [], allowedUserIds: [], signingSecret: "disabled-disabled-disabled-disabled",
+        }).execute(actor, {
+          conversationId: input.conversationId, message: input.message, selectedEntityRef: input.selectedEntityRef,
+          candidate: visitWriteIntent.kind === "visit" ? visitWriteIntent.candidate : undefined,
+          issue: visitWriteIntent.kind === "needs_input" ? visitWriteIntent.reason : undefined,
+        }),
+        controlPlaneWrites: convex.writeMetrics(),
+      };
+    }
     const taskWriteIntent = classifyTaskWriteIntent({ message: input.message, timezone: actor.timezone });
     if (taskWriteIntent.kind !== "none") {
       const writePort = new HostmateHttpTaskWritePort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal);
@@ -269,6 +286,11 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
         toolId: TASKS_CREATE_TASK_TOOL_ID, toolVersion: TASKS_CREATE_TASK_TOOL_VERSION,
         requiredPermission: TASKS_CREATE_TASK_PERMISSION, operationType: "create", operation: "task.create",
         commit: (actor, intent) => new HostmateHttpTaskWritePort(config.hostmateApiBaseUrl, token, fetch, requestId).commit(actor, { signedIntent: intent }),
+      },
+      {
+        toolId: VISITS_CREATE_VISIT_TOOL_ID, toolVersion: VISITS_CREATE_VISIT_TOOL_VERSION,
+        requiredPermission: VISITS_CREATE_VISIT_PERMISSION, operationType: "create", operation: "visit.create",
+        commit: (actor, intent) => new HostmateHttpVisitWritePort(config.hostmateApiBaseUrl, token, fetch, requestId).commit(actor, { signedIntent: intent }),
       },
     ]);
   }
@@ -408,7 +430,7 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
       try {
         const committed = await definition.commit(actor, record.intent);
         await repository.finalizeWriteIntent(actor, { draftId: params.data.draftId, expectedStatus: "committing", status: "committed", now: Date.now(), result: committed });
-        await appendWriteEvent(repository, actor, record.intent, "write.committed", { draftId: params.data.draftId, outcome: committed.outcome, idempotent: committed.idempotent });
+        await appendWriteEvent(repository, actor, record.intent, "write.committed", { draftId: params.data.draftId, outcome: committed.outcome, idempotent: committed.idempotent, entity: committed.entity, details: committed.details });
         const run = await repository.getRun(actor, record.intent.envelope.sourceRunId);
         if (run?.status === "awaiting_confirmation") await repository.updateRun(actor, run.runId, { status: "completed", resultSummary: "Confirmed write committed", completedAt: Date.now() }, "awaiting_confirmation");
         return res.json({ success: true, data: { draftId: params.data.draftId, status: "committed", idempotent: committed.idempotent } });

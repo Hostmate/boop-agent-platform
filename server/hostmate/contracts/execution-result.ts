@@ -70,6 +70,8 @@ export type ActionConfirmationBlock = Readonly<{
   description: string;
   target: EntityRef;
   changes: readonly Readonly<{ field: string; from?: string; to: string }>[];
+  warnings?: readonly string[];
+  sideEffects?: readonly string[];
   risk: Exclude<import("./domain.js").RiskLevel, "R0">;
   expiresAt: number;
   successMessage?: string;
