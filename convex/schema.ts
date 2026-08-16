@@ -341,4 +341,19 @@ export default defineSchema({
   })
     .index("by_tenant_run", ["tenantId", "runId"])
     .index("by_tenant_created", ["tenantId", "createdAt"]),
+
+  agentPlatformWriteIntents: defineTable({
+    draftId: v.string(), tenantId: v.string(), actorUserId: v.string(),
+    intent: v.any(),
+    status: v.union(
+      v.literal("proposed"), v.literal("confirmed"), v.literal("committing"),
+      v.literal("committed"), v.literal("cancelled"), v.literal("expired"),
+      v.literal("failed"), v.literal("stale"),
+    ),
+    createdAt: v.number(), confirmedAt: v.optional(v.number()), commitStartedAt: v.optional(v.number()),
+    terminalAt: v.optional(v.number()), result: v.optional(v.any()), errorCode: v.optional(v.string()),
+  })
+    .index("by_tenant_draft", ["tenantId", "draftId"])
+    .index("by_tenant_actor_created", ["tenantId", "actorUserId", "createdAt"])
+    .index("by_tenant_status_created", ["tenantId", "status", "createdAt"]),
 });

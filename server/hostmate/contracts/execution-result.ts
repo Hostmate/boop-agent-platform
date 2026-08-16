@@ -62,7 +62,19 @@ export type MultiAgentSummaryBlock = Readonly<{
   }>[];
 }>;
 
-export type AgentContentBlock = EntityListBlock | EntityDetailBlock | BriefBlock | MultiAgentSummaryBlock;
+export type ActionConfirmationBlock = Readonly<{
+  type: "action_confirmation";
+  draftId: string;
+  confirmationToken: string;
+  title: string;
+  description: string;
+  target: EntityRef;
+  changes: readonly Readonly<{ field: string; from: string; to: string }>[];
+  risk: Exclude<import("./domain.js").RiskLevel, "R0">;
+  expiresAt: number;
+}>;
+
+export type AgentContentBlock = EntityListBlock | EntityDetailBlock | BriefBlock | MultiAgentSummaryBlock | ActionConfirmationBlock;
 
 export type ExecutionResultStatus = "completed" | "partial" | "needs_input" | "failed" | "permission_denied";
 

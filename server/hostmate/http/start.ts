@@ -1,5 +1,6 @@
 import { createAgentPlatformRuntimeApp } from "./runtime-app.js";
 import type { OpenRouterReasoningEffort } from "../runtime/openrouter-adapter.js";
+import { readFileSync } from "node:fs";
 
 function required(name: string): string {
   const value = process.env[name]?.trim();
@@ -59,6 +60,18 @@ function multiAgentConfig(): NonNullable<Parameters<typeof createAgentPlatformRu
   return { enabled, allowedTenantIds, allowedUserIds };
 }
 
+function safeWritesConfig(): NonNullable<Parameters<typeof createAgentPlatformRuntimeApp>[0]["safeWrites"]> {
+  const enabled = process.env.AGENT_PLATFORM_SAFE_WRITES_ENABLED === "true";
+  if (!enabled) return { enabled: false, allowedTenantIds: [], allowedUserIds: [], signingSecret: "disabled-disabled-disabled-disabled" };
+  const allowedTenantIds = idList("AGENT_PLATFORM_SAFE_WRITES_ALLOWED_TENANT_IDS");
+  const allowedUserIds = idList("AGENT_PLATFORM_SAFE_WRITES_ALLOWED_USER_IDS");
+  const signingSecret = process.env.AGENT_PLATFORM_WRITE_DRAFT_HMAC_SECRET?.trim()
+    || (process.env.AGENT_PLATFORM_WRITE_DRAFT_HMAC_SECRET_PATH ? readFileSync(process.env.AGENT_PLATFORM_WRITE_DRAFT_HMAC_SECRET_PATH, "utf8").trim() : "");
+  if (!allowedTenantIds.length || !allowedUserIds.length) throw new Error("Safe writes canary requires explicit tenant and user allowlists");
+  if (signingSecret.length < 32) throw new Error("Agent Platform write draft HMAC secret must contain at least 32 characters");
+  return { enabled, allowedTenantIds, allowedUserIds, signingSecret, ttlMs: 10 * 60_000 };
+}
+
 const port = Number(process.env.AGENT_PLATFORM_RUNTIME_PORT ?? 4310);
 const shutdownTimeoutMs = Number(process.env.AGENT_PLATFORM_SHUTDOWN_TIMEOUT_MS ?? 55_000);
 const convexUrl = process.env.CONVEX_URL?.trim() || required("VITE_CONVEX_URL");
@@ -90,6 +103,7 @@ const app = createAgentPlatformRuntimeApp({
   memory: memoryConfig(),
   skills: skillsConfig(),
   multiAgent: multiAgentConfig(),
+  safeWrites: safeWritesConfig(),
   fallbackModels: process.env.AGENT_PLATFORM_CRM_FALLBACK_MODELS?.split(",").map((value) => value.trim()).filter(Boolean),
   maxConcurrentTurns: Number(process.env.AGENT_PLATFORM_MAX_CONCURRENT_TURNS ?? 8),
   issuer: required('AGENT_PLATFORM_JWT_ISSUER'),

@@ -7,6 +7,7 @@ import type {
   ConversationRecord,
   CreateRunInput,
   RunPatch,
+  WriteIntentRecord,
 } from "./repository.js";
 
 export interface ConvexControlPlaneClient {
@@ -132,5 +133,29 @@ export class ConvexControlPlaneRepository implements ControlPlaneRepository {
       ...usage,
       ...this.audit(actor),
     });
+  }
+
+  createWriteIntent(actor: ActorContext, record: WriteIntentRecord) {
+    return this.client.mutation<WriteIntentRecord>("agentPlatform:createWriteIntent", { ...record, ...this.audit(actor) });
+  }
+
+  getWriteIntent(actor: ActorContext, draftId: string) {
+    return this.client.query<WriteIntentRecord | null>("agentPlatform:getWriteIntent", { draftId, ...this.audit(actor) });
+  }
+
+  confirmWriteIntent(actor: ActorContext, input: Parameters<ControlPlaneRepository["confirmWriteIntent"]>[1]) {
+    return this.client.mutation<WriteIntentRecord>("agentPlatform:confirmWriteIntent", { ...input, ...this.audit(actor) });
+  }
+
+  claimWriteIntentCommit(actor: ActorContext, input: Parameters<ControlPlaneRepository["claimWriteIntentCommit"]>[1]) {
+    return this.client.mutation<WriteIntentRecord>("agentPlatform:claimWriteIntentCommit", { ...input, ...this.audit(actor) });
+  }
+
+  cancelWriteIntent(actor: ActorContext, input: Parameters<ControlPlaneRepository["cancelWriteIntent"]>[1]) {
+    return this.client.mutation<WriteIntentRecord>("agentPlatform:cancelWriteIntent", { ...input, ...this.audit(actor) });
+  }
+
+  finalizeWriteIntent(actor: ActorContext, input: Parameters<ControlPlaneRepository["finalizeWriteIntent"]>[1]) {
+    return this.client.mutation<WriteIntentRecord>("agentPlatform:finalizeWriteIntent", { ...input, ...this.audit(actor) });
   }
 }

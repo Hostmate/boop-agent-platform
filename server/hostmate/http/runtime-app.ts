@@ -23,6 +23,12 @@ import { BoopScopedMemoryRepository, type PropertyOrderRecall } from '../memory/
 import { ExplicitUserMemoryVerticalSlice } from '../vertical-slices/explicit-user-memory.js';
 import { createRuntimeSkillExecutor } from '../skills/runtime-dispatcher.js';
 import { classifyOrchestrationIntent, createRuntimeOrchestrationExecutor } from '../orchestration/runtime-dispatcher.js';
+import { classifyLeadStatusWriteIntent, LeadStatusWritePortError } from '../product-tools/crm/update-lead-status.js';
+import { HostmateHttpLeadStatusWritePort as HttpLeadStatusWritePort } from '../product-tools/crm/hostmate-http-lead-status-write-port.js';
+import { CrmUpdateLeadStatusVerticalSlice } from '../vertical-slices/crm-update-lead-status.js';
+import { verifyWriteIntentConfirmationToken, verifyWriteIntentSignature } from '../drafts/contracts.js';
+import type { SignedWriteIntent } from '../drafts/contracts.js';
+import type { ActorContext } from '../contracts/actor-context.js';
 
 const requestSchema = z.object({
   conversationId: z.string().uuid(),
@@ -59,6 +65,13 @@ export type AgentPlatformRuntimeConfig = Readonly<{
     allowedTenantIds: readonly string[];
     allowedUserIds: readonly string[];
   }>;
+  safeWrites?: Readonly<{
+    enabled: boolean;
+    allowedTenantIds: readonly string[];
+    allowedUserIds: readonly string[];
+    signingSecret: string;
+    ttlMs?: number;
+  }>;
   maxConcurrentTurns?: number;
   isReady?: () => boolean;
   issuer?: string;
@@ -72,7 +85,7 @@ export type AgentPlatformRuntimeConfig = Readonly<{
 export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig) {
   const app = express();
   const openRouterTelemetry = new OpenRouterTelemetryMonitor();
-  const capabilities = ["crm.search_leads.v1", "crm.get_lead_context.v1", "visits.list_lead_visits.v1", "visits.get_visit.v1", "property.search_properties.v1", "property.get_property.v1", "skill.prepare-visit-brief.v1", "skill.prepare-lead-brief.v1"] as const;
+  const capabilities = ["crm.search_leads.v1", "crm.get_lead_context.v1", "visits.list_lead_visits.v1", "visits.get_visit.v1", "property.search_properties.v1", "property.get_property.v1", "skill.prepare-visit-brief.v1", "skill.prepare-lead-brief.v1", "crm.update_lead_status.v1"] as const;
   const maxConcurrentTurns = Math.max(1, Math.floor(config.maxConcurrentTurns ?? 8));
   let activeTurns = 0;
   const verifyActorToken = config.verifyActorToken ?? (
@@ -105,6 +118,19 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
     const classificationStartedAt = performance.now();
     const memoryCommand = classifyExplicitMemoryCommand(input.message);
     const classificationMs = performance.now() - classificationStartedAt;
+    const statusWriteIntent = classifyLeadStatusWriteIntent(input.message);
+    if (statusWriteIntent.kind !== "none") {
+      const writePort = new HttpLeadStatusWritePort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal);
+      return {
+        ...await new CrmUpdateLeadStatusVerticalSlice(repository, writePort, config.safeWrites ?? {
+          enabled: false, allowedTenantIds: [], allowedUserIds: [], signingSecret: "disabled-disabled-disabled-disabled",
+        }).execute(actor, {
+          conversationId: input.conversationId, message: input.message, selectedEntityRef: input.selectedEntityRef,
+          requestedStatus: statusWriteIntent.kind === "status" ? statusWriteIntent.status : undefined,
+        }),
+        controlPlaneWrites: convex.writeMetrics(),
+      };
+    }
     if (memoryCommand) {
       if (!memoryAllowed) throw new Error("MEMORY_FORBIDDEN");
       return {
@@ -165,6 +191,48 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
     const result = await slice.execute(actor, { ...input, requestId: context.requestId, abortController: context.abortController });
     return { ...result, controlPlaneWrites: convex.writeMetrics() };
   });
+
+  async function safeWriteContext(token: string): Promise<{ actor: ActorContext; repository: ConvexControlPlaneRepository; convex: AuthenticatedConvexHttpClient }> {
+    if (!verifyActorToken) throw new Error("SAFE_WRITES_UNAUTHENTICATED");
+    const claims = await verifyActorToken(token);
+    const convex = new AuthenticatedConvexHttpClient(config.convexUrl, token);
+    const trusted = await convex.currentActor();
+    if (trusted.tenantId !== claims.tenant_id || trusted.userId !== claims.user_id
+      || trusted.sessionId !== claims.session_id || trusted.permissionsVersion !== claims.permissions_version) {
+      throw new Error("ACTOR_CONTEXT_VERIFICATION_MISMATCH");
+    }
+    const actor = createActorContext({ ...trusted, isSuperAdmin: trusted.role === "superadmin" });
+    if (!config.safeWrites?.enabled || !config.safeWrites.allowedTenantIds.includes(actor.tenantId)
+      || !config.safeWrites.allowedUserIds.includes(actor.userId) || !actor.permissions.includes("crm.write")) {
+      throw new Error("SAFE_WRITES_FORBIDDEN");
+    }
+    return { actor, repository: new ConvexControlPlaneRepository(convex), convex };
+  }
+
+  function assertIntentOwner(actor: ActorContext, intent: SignedWriteIntent): void {
+    const envelope = intent.envelope;
+    if (!config.safeWrites || !verifyWriteIntentSignature(intent, config.safeWrites.signingSecret)) throw new Error("DRAFT_SIGNATURE_INVALID");
+    if (envelope.tenantId !== actor.tenantId || envelope.actorUserId !== actor.userId
+      || envelope.toolId !== "crm.update_lead_status.v1" || envelope.toolVersion !== 1
+      || envelope.toolScope.length !== 1 || envelope.toolScope[0] !== "crm.update_lead_status.v1@1") {
+      throw new Error("DRAFT_ACTOR_MISMATCH");
+    }
+  }
+
+  function assertIntentAuthority(actor: ActorContext, intent: SignedWriteIntent): void {
+    assertIntentOwner(actor, intent);
+    if (intent.envelope.sessionId !== actor.sessionId || intent.envelope.permissionsVersion !== actor.permissionsVersion) {
+      throw new Error("DRAFT_ACTOR_MISMATCH");
+    }
+  }
+
+  async function appendWriteEvent(repository: ConvexControlPlaneRepository, actor: ActorContext, intent: SignedWriteIntent, type: string, payload: unknown): Promise<void> {
+    const existing = await repository.listEvents(actor, { executionRunId: intent.envelope.sourceRunId, limit: 500 });
+    await repository.appendEvent(actor, {
+      eventId: randomUUID(), conversationId: intent.envelope.conversationId, executionRunId: intent.envelope.sourceRunId,
+      sequence: (existing.at(-1)?.sequence ?? 0) + 1, type, visibility: "user", payload, occurredAt: Date.now(),
+    });
+  }
   app.disable("x-powered-by");
   app.use(express.json({ limit: "16kb" }));
   app.get("/health/live", (_req, res) => res.json({ ok: true }));
@@ -219,6 +287,83 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
       return res.status(unauthenticated ? 401 : forbidden ? 403 : 500).json({ success: false, error: unauthenticated ? "UNAUTHENTICATED" : forbidden ? "FORBIDDEN" : "INTERNAL_ERROR" });
     } finally {
       activeTurns -= 1;
+    }
+  });
+
+  const draftIdSchema = z.object({ draftId: z.string().uuid() }).strict();
+  const confirmSchema = z.object({ confirmationToken: z.string().min(32).max(128) }).strict();
+
+  app.post("/v1/write-drafts/:draftId/confirm", async (req, res) => {
+    const authorization = req.headers.authorization;
+    if (!authorization?.startsWith("Bearer ")) return res.status(401).json({ success: false, error: "UNAUTHENTICATED" });
+    const params = draftIdSchema.safeParse(req.params);
+    const body = confirmSchema.safeParse(req.body);
+    if (!params.success || !body.success) return res.status(400).json({ success: false, error: "INVALID_DRAFT_CONFIRMATION" });
+    try {
+      const token = authorization.slice(7);
+      const { actor, repository } = await safeWriteContext(token);
+      const record = await repository.getWriteIntent(actor, params.data.draftId);
+      if (!record) return res.status(404).json({ success: false, error: "DRAFT_NOT_FOUND" });
+      assertIntentAuthority(actor, record.intent);
+      if (!verifyWriteIntentConfirmationToken(record.intent, body.data.confirmationToken)) throw new Error("DRAFT_TOKEN_INVALID");
+      if (record.status === "committed") return res.json({ success: true, data: { draftId: params.data.draftId, status: "committed", idempotent: true } });
+      const confirmed = await repository.confirmWriteIntent(actor, { draftId: params.data.draftId, now: Date.now() });
+      if (confirmed.status === "expired") {
+        await appendWriteEvent(repository, actor, record.intent, "draft.expired", { draftId: params.data.draftId });
+        await repository.updateRun(actor, record.intent.envelope.sourceRunId, { status: "failed", errorCode: "DRAFT_EXPIRED", resultSummary: "Draft expired", completedAt: Date.now() }, "awaiting_confirmation");
+        return res.status(409).json({ success: false, error: "DRAFT_EXPIRED" });
+      }
+      if (record.status === "proposed") await appendWriteEvent(repository, actor, record.intent, "draft.confirmed", { draftId: params.data.draftId, actorUserId: actor.userId });
+      const claimed = await repository.claimWriteIntentCommit(actor, { draftId: params.data.draftId, now: Date.now() });
+      if (claimed.status === "committed") return res.json({ success: true, data: { draftId: params.data.draftId, status: "committed", idempotent: true } });
+      await appendWriteEvent(repository, actor, record.intent, "write.started", { draftId: params.data.draftId, toolId: record.intent.envelope.toolId });
+      const port = new HttpLeadStatusWritePort(config.hostmateApiBaseUrl, token, fetch, String(req.headers["x-request-id"] ?? randomUUID()));
+      try {
+        const committed = await port.commit(actor, { signedIntent: record.intent });
+        await repository.finalizeWriteIntent(actor, { draftId: params.data.draftId, expectedStatus: "committing", status: "committed", now: Date.now(), result: committed });
+        await appendWriteEvent(repository, actor, record.intent, "write.committed", { draftId: params.data.draftId, outcome: committed.outcome, idempotent: committed.idempotent });
+        const run = await repository.getRun(actor, record.intent.envelope.sourceRunId);
+        if (run?.status === "awaiting_confirmation") await repository.updateRun(actor, run.runId, { status: "completed", resultSummary: "Confirmed write committed", completedAt: Date.now() }, "awaiting_confirmation");
+        return res.json({ success: true, data: { draftId: params.data.draftId, status: "committed", idempotent: committed.idempotent } });
+      } catch (error) {
+        const code = error instanceof LeadStatusWritePortError ? error.code : "INTERNAL";
+        const stale = code === "PRECONDITION_FAILED" || code === "STALE_REFERENCE";
+        await repository.finalizeWriteIntent(actor, { draftId: params.data.draftId, expectedStatus: "committing", status: stale ? "stale" : "failed", now: Date.now(), errorCode: code });
+        await appendWriteEvent(repository, actor, record.intent, stale ? "draft.stale" : "write.failed", { draftId: params.data.draftId, errorCode: code });
+        if (stale) await appendWriteEvent(repository, actor, record.intent, "write.failed", { draftId: params.data.draftId, errorCode: code, mutation: false });
+        const run = await repository.getRun(actor, record.intent.envelope.sourceRunId);
+        if (run?.status === "awaiting_confirmation") await repository.updateRun(actor, run.runId, { status: "failed", errorCode: code, resultSummary: stale ? "Draft became stale" : "Confirmed write failed", completedAt: Date.now() }, "awaiting_confirmation");
+        return res.status(stale ? 409 : code === "PERMISSION_DENIED" ? 403 : 500).json({ success: false, error: stale ? "DRAFT_STALE" : code });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const forbidden = /FORBIDDEN|ACTOR_MISMATCH/.test(message);
+      const conflict = /IN_PROGRESS|CANCELLED|STALE|EXPIRED|NOT_CONFIRMED/.test(message);
+      return res.status(forbidden ? 403 : conflict ? 409 : /TOKEN|SIGNATURE|INVALID/.test(message) ? 400 : 500).json({ success: false, error: forbidden ? "FORBIDDEN" : conflict ? "DRAFT_CONFLICT" : /TOKEN/.test(message) ? "DRAFT_TOKEN_INVALID" : /SIGNATURE/.test(message) ? "DRAFT_SIGNATURE_INVALID" : "INTERNAL_ERROR" });
+    }
+  });
+
+  app.post("/v1/write-drafts/:draftId/cancel", async (req, res) => {
+    const authorization = req.headers.authorization;
+    if (!authorization?.startsWith("Bearer ")) return res.status(401).json({ success: false, error: "UNAUTHENTICATED" });
+    const params = draftIdSchema.safeParse(req.params);
+    if (!params.success) return res.status(400).json({ success: false, error: "INVALID_DRAFT_CANCELLATION" });
+    try {
+      const { actor, repository } = await safeWriteContext(authorization.slice(7));
+      const record = await repository.getWriteIntent(actor, params.data.draftId);
+      if (!record) return res.status(404).json({ success: false, error: "DRAFT_NOT_FOUND" });
+      // Cancellation is a non-escalating terminal action. The same actor in the
+      // same tenant may cancel after re-authentication or session rotation; only
+      // confirmation remains bound to the exact originating session/version.
+      assertIntentOwner(actor, record.intent);
+      const cancelled = await repository.cancelWriteIntent(actor, { draftId: params.data.draftId, now: Date.now() });
+      await appendWriteEvent(repository, actor, record.intent, cancelled.status === "expired" ? "draft.expired" : "draft.cancelled", { draftId: params.data.draftId });
+      const run = await repository.getRun(actor, record.intent.envelope.sourceRunId);
+      if (run?.status === "awaiting_confirmation") await repository.updateRun(actor, run.runId, { status: cancelled.status === "expired" ? "failed" : "cancelled", errorCode: cancelled.status === "expired" ? "DRAFT_EXPIRED" : undefined, resultSummary: cancelled.status === "expired" ? "Draft expired" : "Draft cancelled", completedAt: Date.now() }, "awaiting_confirmation");
+      return res.json({ success: true, data: { draftId: params.data.draftId, status: cancelled.status } });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return res.status(/FORBIDDEN|ACTOR_MISMATCH/.test(message) ? 403 : /CANCELLABLE|EXPIRED/.test(message) ? 409 : 500).json({ success: false, error: /FORBIDDEN|ACTOR_MISMATCH/.test(message) ? "FORBIDDEN" : "DRAFT_CONFLICT" });
     }
   });
   return app;

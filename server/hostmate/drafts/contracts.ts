@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { EntityRef, RiskLevel } from "../contracts/domain.js";
 
 export type DraftStatus = "pending" | "approved" | "committing" | "committed" | "rejected" | "expired" | "failed" | "unknown";
@@ -27,6 +27,43 @@ export type SignedDraft = Readonly<{
   committedAt?: number;
 }>;
 
+export type WriteIntentStatus = "proposed" | "confirmed" | "committing" | "committed" | "cancelled" | "expired" | "failed" | "stale";
+
+/**
+ * Generic authority-bound write intent. The LLM-facing tool can only prepare
+ * this envelope; it is deliberately not executable and contains no free-form
+ * patch or caller-supplied authority fields.
+ */
+export type WriteIntentEnvelope = Readonly<{
+  draftId: string;
+  tenantId: string;
+  actorUserId: string;
+  sessionId: string;
+  permissionsVersion: string;
+  effectiveTenantOverride: boolean;
+  conversationId: string;
+  sourceRunId: string;
+  profileId: string;
+  toolId: string;
+  toolVersion: number;
+  toolScope: readonly string[];
+  target: EntityRef;
+  operation: string;
+  requestedValue: string;
+  preconditions: readonly { kind: string; expected: string }[];
+  argsHash: string;
+  idempotencyKey: string;
+  risk: Exclude<RiskLevel, "R0">;
+  policyDecisionId: string;
+  expiresAt: number;
+  confirmationTokenHash: string;
+}>;
+
+export type SignedWriteIntent = Readonly<{
+  envelope: WriteIntentEnvelope;
+  signature: string;
+}>;
+
 const TRANSITIONS: Record<DraftStatus, readonly DraftStatus[]> = {
   pending: ["approved", "rejected", "expired"],
   approved: ["committing", "expired"],
@@ -43,12 +80,33 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+export function canonicalDraftJson(value: unknown): string {
+  return stableJson(value);
+}
+
 export function hashDraftArguments(args: unknown): string {
   return createHash("sha256").update(stableJson(args)).digest("hex");
 }
 
 export function hashConfirmationToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
+}
+
+export function signWriteIntent(envelope: WriteIntentEnvelope, secret: string): string {
+  if (secret.length < 32) throw new Error("WRITE_INTENT_SECRET_TOO_SHORT");
+  return createHmac("sha256", secret).update(stableJson(envelope)).digest("hex");
+}
+
+export function verifyWriteIntentSignature(intent: SignedWriteIntent, secret: string): boolean {
+  const expected = Buffer.from(signWriteIntent(intent.envelope, secret), "hex");
+  const received = Buffer.from(intent.signature, "hex");
+  return expected.length === received.length && timingSafeEqual(expected, received);
+}
+
+export function verifyWriteIntentConfirmationToken(intent: SignedWriteIntent, token: string): boolean {
+  const expected = Buffer.from(intent.envelope.confirmationTokenHash, "hex");
+  const received = Buffer.from(hashConfirmationToken(token), "hex");
+  return expected.length === received.length && timingSafeEqual(expected, received);
 }
 
 export function canTransitionDraft(from: DraftStatus, to: DraftStatus): boolean {

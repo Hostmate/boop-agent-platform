@@ -10,6 +10,7 @@ import type {
   RunStatus,
   UsageRecord,
 } from "../lifecycle/contracts.js";
+import type { SignedWriteIntent, WriteIntentStatus } from "../drafts/contracts.js";
 
 export type ConversationRecord = Readonly<{
   conversationId: string;
@@ -76,6 +77,17 @@ export type RunPatch = Readonly<{
   completedAt?: number;
 }>;
 
+export type WriteIntentRecord = Readonly<{
+  intent: SignedWriteIntent;
+  status: WriteIntentStatus;
+  createdAt: number;
+  confirmedAt?: number;
+  commitStartedAt?: number;
+  terminalAt?: number;
+  result?: Readonly<{ outcome: string; idempotent?: boolean }>;
+  errorCode?: string;
+}>;
+
 /**
  * Port owned by the Boop-derived core. Implementations may use Convex today or
  * a different control-plane datastore later without changing runtime logic.
@@ -97,4 +109,10 @@ export interface ControlPlaneRepository {
   heartbeat(actor: ActorContext, input: { runId: string; attemptId: string; leaseOwner: string; fencingToken: number; leaseExpiresAt: number }): Promise<boolean>;
   requestCancellation(actor: ActorContext, runId: string, requestedAt: number): Promise<ExecutionRunRecord>;
   recordUsage(actor: ActorContext, usage: UsageRecord): Promise<void>;
+  createWriteIntent(actor: ActorContext, record: WriteIntentRecord): Promise<WriteIntentRecord>;
+  getWriteIntent(actor: ActorContext, draftId: string): Promise<WriteIntentRecord | null>;
+  confirmWriteIntent(actor: ActorContext, input: { draftId: string; now: number }): Promise<WriteIntentRecord>;
+  claimWriteIntentCommit(actor: ActorContext, input: { draftId: string; now: number }): Promise<WriteIntentRecord>;
+  cancelWriteIntent(actor: ActorContext, input: { draftId: string; now: number }): Promise<WriteIntentRecord>;
+  finalizeWriteIntent(actor: ActorContext, input: { draftId: string; expectedStatus: "committing"; status: "committed" | "failed" | "stale"; now: number; result?: { outcome: string; idempotent?: boolean }; errorCode?: string }): Promise<WriteIntentRecord>;
 }

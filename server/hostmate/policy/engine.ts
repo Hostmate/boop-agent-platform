@@ -37,7 +37,10 @@ export class DefaultPolicyEngine implements PolicyEngine {
     if (!actorHasPermission(input.actor, input.requiredPermission)) return deny("missing_permission");
     if (input.mode !== "read" && !input.writeEnabled) return deny("writes_disabled");
     if (input.mode !== "read" && !input.hasRequiredPreconditions) return deny("missing_preconditions");
-    if (input.mode === "external" || input.mode === "draft" || riskRank[input.risk] >= riskRank.R2) {
+    // Draft preparation is the non-mutating safety boundary. Product writes
+    // and external effects always require a separately confirmed draft; high
+    // risk operations retain the same requirement even in future modes.
+    if (input.mode === "write" || input.mode === "external" || riskRank[input.risk] >= riskRank.R2) {
       if (!input.confirmedDraftId) {
         return { effect: "require_confirmation", reason: "signed_draft_required", decisionId: input.decisionId };
       }

@@ -18,6 +18,12 @@ const attemptStatus = v.union(
   v.literal("cancelled"), v.literal("timeout"), v.literal("unknown"),
 );
 
+const writeIntentStatus = v.union(
+  v.literal("proposed"), v.literal("confirmed"), v.literal("committing"),
+  v.literal("committed"), v.literal("cancelled"), v.literal("expired"),
+  v.literal("failed"), v.literal("stale"),
+);
+
 type DatabaseCtx = QueryCtx | MutationCtx;
 
 async function tenantRun(ctx: DatabaseCtx, tenantId: string, runId: string) {
@@ -48,6 +54,17 @@ async function ownedAttempt(ctx: DatabaseCtx, tenantId: string, userId: string, 
   if (!attempt) throw new ConvexError("ATTEMPT_NOT_FOUND");
   await ownedTenantRun(ctx, tenantId, userId, attempt.runId);
   return attempt;
+}
+
+async function tenantWriteIntent(ctx: DatabaseCtx, tenantId: string, draftId: string) {
+  return await ctx.db.query("agentPlatformWriteIntents")
+    .withIndex("by_tenant_draft", (q) => q.eq("tenantId", tenantId).eq("draftId", draftId)).unique();
+}
+
+async function ownedWriteIntent(ctx: DatabaseCtx, tenantId: string, userId: string, draftId: string) {
+  const draft = await tenantWriteIntent(ctx, tenantId, draftId);
+  if (!draft || draft.actorUserId !== userId) throw new ConvexError("WRITE_INTENT_FORBIDDEN");
+  return draft;
 }
 
 export const currentActor = query({
@@ -329,6 +346,127 @@ export const listUsage = query({
     return await ctx.db.query("agentPlatformUsage")
       .withIndex("by_tenant_run", (q) => q.eq("tenantId", actor.tenantId).eq("runId", args.runId))
       .order("asc").take(limit);
+  },
+});
+
+export const createWriteIntent = mutation({
+  args: {
+    intent: v.any(), status: writeIntentStatus, createdAt: v.number(),
+    confirmedAt: v.optional(v.number()), commitStartedAt: v.optional(v.number()), terminalAt: v.optional(v.number()),
+    result: v.optional(v.any()), errorCode: v.optional(v.string()), ...expectedActorArgs,
+  },
+  handler: async (ctx, args) => {
+    const actor = await requireAgentPlatformActor(ctx, args);
+    const signed = args.intent as { envelope?: Record<string, unknown>; signature?: unknown };
+    const envelope = signed?.envelope;
+    if (!envelope || typeof signed.signature !== "string"
+      || envelope.tenantId !== actor.tenantId || envelope.actorUserId !== actor.userId
+      || typeof envelope.draftId !== "string" || typeof envelope.sourceRunId !== "string"
+      || typeof envelope.conversationId !== "string" || args.status !== "proposed") {
+      throw new ConvexError("INVALID_WRITE_INTENT");
+    }
+    if (await tenantWriteIntent(ctx, actor.tenantId, envelope.draftId)) throw new ConvexError("WRITE_INTENT_ALREADY_EXISTS");
+    const run = await ownedTenantRun(ctx, actor.tenantId, actor.userId, envelope.sourceRunId);
+    if (run.conversationId !== envelope.conversationId || run.status !== "awaiting_confirmation") {
+      throw new ConvexError("WRITE_INTENT_RUN_MISMATCH");
+    }
+    const value = {
+      draftId: envelope.draftId, tenantId: actor.tenantId, actorUserId: actor.userId,
+      intent: args.intent, status: "proposed" as const, createdAt: args.createdAt,
+    };
+    await ctx.db.insert("agentPlatformWriteIntents", value);
+    return value;
+  },
+});
+
+/** Authority-bound raw record used only by the authenticated runtime. */
+export const getWriteIntent = query({
+  args: { draftId: v.string(), ...expectedActorArgs },
+  handler: async (ctx, args) => {
+    const actor = await requireAgentPlatformActor(ctx, args);
+    return await ownedWriteIntent(ctx, actor.tenantId, actor.userId, args.draftId);
+  },
+});
+
+/** Sanitized realtime projection consumed by the confirmation component. */
+export const getWriteIntentStatus = query({
+  args: { draftId: v.string() },
+  handler: async (ctx, args) => {
+    const actor = await requireAgentPlatformActor(ctx);
+    const row = await ownedWriteIntent(ctx, actor.tenantId, actor.userId, args.draftId);
+    const envelope = (row.intent as { envelope: { expiresAt: number } }).envelope;
+    return { draftId: row.draftId, status: row.status, expiresAt: envelope.expiresAt, confirmedAt: row.confirmedAt, terminalAt: row.terminalAt, result: row.result, errorCode: row.errorCode };
+  },
+});
+
+export const confirmWriteIntent = mutation({
+  args: { draftId: v.string(), now: v.number(), ...expectedActorArgs },
+  handler: async (ctx, args) => {
+    const actor = await requireAgentPlatformActor(ctx, args);
+    const row = await ownedWriteIntent(ctx, actor.tenantId, actor.userId, args.draftId);
+    const expiresAt = Number((row.intent as { envelope: { expiresAt: number } }).envelope.expiresAt);
+    if (row.status === "committed" || row.status === "confirmed" || row.status === "committing") return row;
+    if (row.status !== "proposed") throw new ConvexError(`WRITE_INTENT_${row.status.toUpperCase()}`);
+    if (!Number.isFinite(expiresAt) || expiresAt <= args.now) {
+      const patch = { status: "expired" as const, terminalAt: args.now, errorCode: "DRAFT_EXPIRED" };
+      await ctx.db.patch(row._id, patch);
+      return { ...row, ...patch };
+    }
+    const patch = { status: "confirmed" as const, confirmedAt: args.now };
+    await ctx.db.patch(row._id, patch);
+    return { ...row, ...patch };
+  },
+});
+
+export const claimWriteIntentCommit = mutation({
+  args: { draftId: v.string(), now: v.number(), ...expectedActorArgs },
+  handler: async (ctx, args) => {
+    const actor = await requireAgentPlatformActor(ctx, args);
+    const row = await ownedWriteIntent(ctx, actor.tenantId, actor.userId, args.draftId);
+    if (row.status === "committed") return row;
+    if (row.status === "committing") {
+      if ((row.commitStartedAt ?? 0) + 30_000 > args.now) throw new ConvexError("WRITE_INTENT_COMMIT_IN_PROGRESS");
+      const recovered = { commitStartedAt: args.now };
+      await ctx.db.patch(row._id, recovered);
+      return { ...row, ...recovered };
+    }
+    if (row.status !== "confirmed") throw new ConvexError("WRITE_INTENT_NOT_CONFIRMED");
+    const patch = { status: "committing" as const, commitStartedAt: args.now };
+    await ctx.db.patch(row._id, patch);
+    return { ...row, ...patch };
+  },
+});
+
+export const cancelWriteIntent = mutation({
+  args: { draftId: v.string(), now: v.number(), ...expectedActorArgs },
+  handler: async (ctx, args) => {
+    const actor = await requireAgentPlatformActor(ctx, args);
+    const row = await ownedWriteIntent(ctx, actor.tenantId, actor.userId, args.draftId);
+    if (row.status === "cancelled") return row;
+    if (row.status !== "proposed") throw new ConvexError("WRITE_INTENT_NOT_CANCELLABLE");
+    const expiresAt = Number((row.intent as { envelope: { expiresAt: number } }).envelope.expiresAt);
+    const patch = expiresAt <= args.now
+      ? { status: "expired" as const, terminalAt: args.now, errorCode: "DRAFT_EXPIRED" }
+      : { status: "cancelled" as const, terminalAt: args.now };
+    await ctx.db.patch(row._id, patch);
+    return { ...row, ...patch };
+  },
+});
+
+export const finalizeWriteIntent = mutation({
+  args: {
+    draftId: v.string(), expectedStatus: v.literal("committing"),
+    status: v.union(v.literal("committed"), v.literal("failed"), v.literal("stale")),
+    now: v.number(), result: v.optional(v.any()), errorCode: v.optional(v.string()), ...expectedActorArgs,
+  },
+  handler: async (ctx, args) => {
+    const actor = await requireAgentPlatformActor(ctx, args);
+    const row = await ownedWriteIntent(ctx, actor.tenantId, actor.userId, args.draftId);
+    if (row.status === "committed" && args.status === "committed") return row;
+    if (row.status !== args.expectedStatus) throw new ConvexError("WRITE_INTENT_STATUS_CONFLICT");
+    const patch = { status: args.status, terminalAt: args.now, result: args.result, errorCode: args.errorCode };
+    await ctx.db.patch(row._id, patch);
+    return { ...row, ...patch };
   },
 });
 
