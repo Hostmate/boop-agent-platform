@@ -12,7 +12,7 @@ export type ProductToolDefinition<T extends z.ZodRawShape = z.ZodRawShape> = Rea
   name: string;
   version: number;
   description: string;
-  ownerDomain: ExecutionProfileId;
+  ownerDomain: string;
   compatibleProfiles: readonly ExecutionProfileId[];
   capabilities: readonly string[];
   mode: ToolMode;

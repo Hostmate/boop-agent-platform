@@ -51,6 +51,8 @@ export type WriteIntentEnvelope = Readonly<{
   operationType: "update" | "create";
   operation: string;
   requestedValue: string;
+  /** Canonical, authority-free fields for structured writes. Signed in full. */
+  structuredPayload?: Readonly<Record<string, string | number | boolean | null>>;
   preconditions: readonly { kind: string; expected: string }[];
   argsHash: string;
   idempotencyKey: string;

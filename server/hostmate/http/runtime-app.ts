@@ -33,6 +33,9 @@ import { verifyWriteIntentConfirmationToken, verifyWriteIntentSignature } from '
 import type { SignedWriteIntent } from '../drafts/contracts.js';
 import type { ActorContext } from '../contracts/actor-context.js';
 import { SafeWriteCommitError, SafeWriteCommitRegistry } from '../drafts/safe-write-commit-registry.js';
+import { classifyTaskWriteIntent, TASKS_CREATE_TASK_PERMISSION, TASKS_CREATE_TASK_TOOL_ID, TASKS_CREATE_TASK_TOOL_VERSION } from '../product-tools/tasks/create-task.js';
+import { HostmateHttpTaskWritePort } from '../product-tools/tasks/hostmate-http-task-write-port.js';
+import { TasksCreateTaskVerticalSlice } from '../vertical-slices/tasks-create-task.js';
 
 const requestSchema = z.object({
   conversationId: z.string().uuid(),
@@ -98,7 +101,7 @@ export type AgentPlatformRuntimeConfig = Readonly<{
 export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig) {
   const app = express();
   const openRouterTelemetry = new OpenRouterTelemetryMonitor();
-  const capabilities = ["crm.search_leads.v1", "crm.get_lead_context.v1", "visits.list_lead_visits.v1", "visits.get_visit.v1", "property.search_properties.v1", "property.get_property.v1", "skill.prepare-visit-brief.v1", "skill.prepare-lead-brief.v1", "crm.update_lead_status.v1", "crm.add_lead_note.v1"] as const;
+  const capabilities = ["crm.search_leads.v1", "crm.get_lead_context.v1", "visits.list_lead_visits.v1", "visits.get_visit.v1", "property.search_properties.v1", "property.get_property.v1", "skill.prepare-visit-brief.v1", "skill.prepare-lead-brief.v1", "crm.update_lead_status.v1", "crm.add_lead_note.v1", "tasks.create_task.v1"] as const;
   const maxConcurrentTurns = Math.max(1, Math.floor(config.maxConcurrentTurns ?? 8));
   let activeTurns = 0;
   const verifyActorToken = config.verifyActorToken ?? (
@@ -131,6 +134,20 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
     const classificationStartedAt = performance.now();
     const memoryCommand = classifyExplicitMemoryCommand(input.message);
     const classificationMs = performance.now() - classificationStartedAt;
+    const taskWriteIntent = classifyTaskWriteIntent({ message: input.message, timezone: actor.timezone });
+    if (taskWriteIntent.kind !== "none") {
+      const writePort = new HostmateHttpTaskWritePort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal);
+      return {
+        ...await new TasksCreateTaskVerticalSlice(repository, writePort, config.safeWrites ?? {
+          enabled: false, allowedTenantIds: [], allowedUserIds: [], signingSecret: "disabled-disabled-disabled-disabled",
+        }).execute(actor, {
+          conversationId: input.conversationId, message: input.message, selectedEntityRef: input.selectedEntityRef,
+          candidate: taskWriteIntent.kind === "task" ? taskWriteIntent.candidate : undefined,
+          issue: taskWriteIntent.kind === "needs_input" ? taskWriteIntent.reason : undefined,
+        }),
+        controlPlaneWrites: convex.writeMetrics(),
+      };
+    }
     const noteWriteIntent = classifyLeadNoteWriteIntent(input.message);
     if (noteWriteIntent.kind !== "none") {
       const writePort = new HostmateHttpLeadNoteWritePort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal);
@@ -247,6 +264,11 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
         toolId: CRM_ADD_LEAD_NOTE_TOOL_ID, toolVersion: CRM_ADD_LEAD_NOTE_TOOL_VERSION,
         requiredPermission: CRM_ADD_LEAD_NOTE_PERMISSION, operationType: "create", operation: "lead.note.append",
         commit: (actor, intent) => new HostmateHttpLeadNoteWritePort(config.hostmateApiBaseUrl, token, fetch, requestId).commit(actor, { signedIntent: intent }),
+      },
+      {
+        toolId: TASKS_CREATE_TASK_TOOL_ID, toolVersion: TASKS_CREATE_TASK_TOOL_VERSION,
+        requiredPermission: TASKS_CREATE_TASK_PERMISSION, operationType: "create", operation: "task.create",
+        commit: (actor, intent) => new HostmateHttpTaskWritePort(config.hostmateApiBaseUrl, token, fetch, requestId).commit(actor, { signedIntent: intent }),
       },
     ]);
   }

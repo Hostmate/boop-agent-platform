@@ -40,6 +40,7 @@ export type PreparedWriteProjection = Readonly<{
   operationType: "update" | "create";
   operation: string;
   requestedValue: string;
+  structuredPayload?: Readonly<Record<string, string | number | boolean | null>>;
   preconditions: readonly Readonly<{ kind: string; expected: string }>[];
   args: unknown;
   block: Omit<ActionConfirmationBlock, "type" | "draftId" | "confirmationToken" | "risk" | "expiresAt" | "target">;
@@ -64,6 +65,7 @@ export type SafeWritePreparationDefinition<TInput, TPrepared> = Readonly<{
   project(value: TInput, selected: EntityRef, prepared: TPrepared): PreparedWriteProjection;
   toolStartedPayload(value: TInput, selected: EntityRef): Record<string, unknown>;
   toolCompletedPayload(prepared: TPrepared): Record<string, unknown>;
+  actorAllowed?(actor: ActorContext): boolean;
   noOp?(value: TInput, prepared: TPrepared): string | undefined;
   preparedSummary: string;
 }>;
@@ -130,6 +132,7 @@ export class SafeWritePreparationEngine<TInput, TPrepared> {
 
     if (!this.config.enabled || !this.config.allowedTenantIds.includes(actor.tenantId)
       || !this.config.allowedUserIds.includes(actor.userId)
+      || (this.definition.actorAllowed && !this.definition.actorAllowed(actor))
       || (!actor.isSuperAdmin && !actor.permissions.includes(this.definition.requiredPermission))) {
       const summary = "La preparación de cambios CRM no está habilitada para este actor.";
       const result: ExecutionResult = { status: "permission_denied", summary, entities: [selected], errors: [{ code: "PERMISSION_DENIED", message: "safe_write_canary_denied", retryable: false }] };
@@ -202,7 +205,9 @@ export class SafeWritePreparationEngine<TInput, TPrepared> {
       conversationId: input.conversationId, sourceRunId: executionRunId, profileId: this.definition.profileId,
       toolId: this.definition.toolId, toolVersion: this.definition.toolVersion, toolScope,
       target: signedTarget, operationType: projection.operationType, operation: projection.operation,
-      requestedValue: projection.requestedValue, preconditions: projection.preconditions,
+      requestedValue: projection.requestedValue,
+      ...(projection.structuredPayload ? { structuredPayload: projection.structuredPayload } : {}),
+      preconditions: projection.preconditions,
       argsHash: hashDraftArguments(projection.args), idempotencyKey: `agent-write:${draftId}`, risk: "R1",
       policyDecisionId: randomUUID(), expiresAt: now + (this.config.ttlMs ?? 10 * 60_000),
       confirmationTokenHash: hashConfirmationToken(confirmationToken),
