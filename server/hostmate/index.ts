@@ -14,6 +14,8 @@ export * from "./runtime/openrouter-adapter.js";
 export * from "./runtime/openrouter-telemetry.js";
 export * from "./skills/registry.js";
 export * from "./skills/prepare-visit-brief.js";
+export * from "./skills/prepare-lead-brief.js";
+export * from "./skills/execution-helpers.js";
 export * from "./tools/registry.js";
 export * from "./product-tools/crm/search-leads.js";
 export * from "./product-tools/crm/get-lead-context.js";

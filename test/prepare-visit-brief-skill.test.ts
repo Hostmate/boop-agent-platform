@@ -130,6 +130,30 @@ describe("prepare-visit-brief single Execution Run", () => {
     expect(p.spies.property).not.toHaveBeenCalled();
   });
 
+  it("chooses selected.visit when lead and visit roles coexist in conversation context", async () => {
+    const { repository, state } = memoryRepository();
+    const conversationId = "123e4567-e89b-42d3-a456-426614174106";
+    state.conversations.add(conversationId);
+    state.messages.push({
+      messageId: "context", conversationId, role: "assistant", contentRedacted: "Contexto",
+      contextRefs: {
+        selected: {
+          lead: { type: "crm.lead", id: "123", label: "Ana Test" },
+          visit: { type: "visits.visit", id: "91", label: "Ático Centro" },
+        },
+        referenced: [],
+      },
+      sequence: 1,
+      createdAt: Date.now(),
+    });
+    const p = ports();
+    const turn = await new PrepareVisitBriefVerticalSlice(repository, p.visit, p.lead, p.property, true).execute(actor(), {
+      conversationId, message: "Prepárame esta visita",
+    });
+    expect(turn.result.status).toBe("completed");
+    expect(p.spies.visit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ visit: expect.objectContaining({ type: "visits.visit", id: "91" }) }));
+  });
+
   it("fails closed before any tool call when one required permission is missing", async () => {
     const { repository } = memoryRepository();
     const p = ports();

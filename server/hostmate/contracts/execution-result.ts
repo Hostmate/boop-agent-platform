@@ -36,7 +36,7 @@ export type BriefBlock = Readonly<{
   title: string;
   status: "complete" | "partial";
   sections: readonly Readonly<{
-    key: "visit" | "lead" | "property" | "preparation";
+    key: "visit" | "lead" | "commercial" | "property" | "preparation";
     title: string;
     availability: "available" | "unavailable";
     fields: readonly Readonly<{ label: string; value: string }>[];

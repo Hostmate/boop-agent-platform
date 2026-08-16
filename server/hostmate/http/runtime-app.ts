@@ -15,14 +15,14 @@ import { OpenRouterAdapter, type OpenRouterReasoningEffort } from "../runtime/op
 import { OpenRouterTelemetryMonitor } from "../runtime/openrouter-telemetry.js";
 import { CrmSearchLeadsVerticalSlice } from "../vertical-slices/crm-search-leads.js";
 import { PropertySearchPropertiesVerticalSlice } from "../vertical-slices/property-search-properties.js";
-import { classifyInteractionTurn } from "../interaction/turn-classifier.js";
+import { classifyBriefSkillIntent, classifyInteractionTurn } from "../interaction/turn-classifier.js";
 import { createActorTokenVerifier, type VerifiedActorClaims } from '../security/actor-token-verifier.js';
 import { randomUUID } from 'node:crypto';
 import { classifyExplicitMemoryCommand, explicitPropertyOrder } from '../memory/policy.js';
 import { BoopScopedMemoryRepository, type PropertyOrderRecall } from '../memory/repository.js';
 import { ExplicitUserMemoryVerticalSlice } from '../vertical-slices/explicit-user-memory.js';
-import { isPrepareVisitBriefIntent } from '../interaction/turn-classifier.js';
 import { PrepareVisitBriefVerticalSlice } from '../skills/prepare-visit-brief.js';
+import { PrepareLeadBriefVerticalSlice } from '../skills/prepare-lead-brief.js';
 
 const requestSchema = z.object({
   conversationId: z.string().uuid(),
@@ -51,6 +51,7 @@ export type AgentPlatformRuntimeConfig = Readonly<{
   }>;
   skills?: Readonly<{
     prepareVisitBriefEnabled: boolean;
+    prepareLeadBriefEnabled: boolean;
     allowedTenantIds: readonly string[];
     allowedUserIds: readonly string[];
   }>;
@@ -67,7 +68,7 @@ export type AgentPlatformRuntimeConfig = Readonly<{
 export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig) {
   const app = express();
   const openRouterTelemetry = new OpenRouterTelemetryMonitor();
-  const capabilities = ["crm.search_leads.v1", "crm.get_lead_context.v1", "visits.list_lead_visits.v1", "visits.get_visit.v1", "property.search_properties.v1", "property.get_property.v1", "skill.prepare-visit-brief.v1"] as const;
+  const capabilities = ["crm.search_leads.v1", "crm.get_lead_context.v1", "visits.list_lead_visits.v1", "visits.get_visit.v1", "property.search_properties.v1", "property.get_property.v1", "skill.prepare-visit-brief.v1", "skill.prepare-lead-brief.v1"] as const;
   const maxConcurrentTurns = Math.max(1, Math.floor(config.maxConcurrentTurns ?? 8));
   let activeTurns = 0;
   const verifyActorToken = config.verifyActorToken ?? (
@@ -108,20 +109,29 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
         controlPlaneWrites: convex.writeMetrics(),
       };
     }
-    if (isPrepareVisitBriefIntent(input.message)) {
-      const skillEnabled = Boolean(
-        config.skills?.prepareVisitBriefEnabled
-        && config.skills.allowedTenantIds.includes(actor.tenantId)
+    const briefSkillIntent = classifyBriefSkillIntent(input.message);
+    if (briefSkillIntent) {
+      const canaryAllowed = Boolean(
+        config.skills?.allowedTenantIds.includes(actor.tenantId)
         && config.skills.allowedUserIds.includes(actor.userId),
       );
+      const skillEnabled = canaryAllowed && Boolean(
+        briefSkillIntent === "prepare-visit-brief"
+          ? config.skills?.prepareVisitBriefEnabled
+          : config.skills?.prepareLeadBriefEnabled,
+      );
+      const leadContextPort = new HostmateHttpLeadContextPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal);
+      const skill = briefSkillIntent === "prepare-visit-brief"
+        ? new PrepareVisitBriefVerticalSlice(
+            repository,
+            new HostmateHttpVisitDetailPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
+            leadContextPort,
+            new HostmateHttpPropertyDetailPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
+            skillEnabled,
+          )
+        : new PrepareLeadBriefVerticalSlice(repository, leadContextPort, skillEnabled);
       return {
-        ...await new PrepareVisitBriefVerticalSlice(
-          repository,
-          new HostmateHttpVisitDetailPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
-          new HostmateHttpLeadContextPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
-          new HostmateHttpPropertyDetailPort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal),
-          skillEnabled,
-        ).execute(actor, input),
+        ...await skill.execute(actor, input),
         controlPlaneWrites: convex.writeMetrics(),
       };
     }

@@ -5,15 +5,28 @@ function normalized(value: string): string {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
-export function isPrepareVisitBriefIntent(message: string): boolean {
+export type BriefSkillIntent = "prepare-visit-brief" | "prepare-lead-brief";
+
+export function classifyBriefSkillIntent(message: string): BriefSkillIntent | undefined {
   const value = normalized(message);
   // Skill IDs and imperative prompt-injection language are not a user-facing
   // selection API. Activation requires an ordinary visit-preparation intent.
-  if (/\bprepare visit brief\b/.test(value) && !/\b(prepara|preparame|preparar|resume|resumen|briefing|dossier)\b/.test(value)) return false;
-  if (/\b(automatizacion|automatitzacio|automation|campana|workflow)\b/.test(value)) return false;
-  const preparation = /\b(prepara|preparame|prepararme|preparala|preparar|preparacio|preparacion|briefing|dossier|resumen operativo|ficha de preparacion)\b/.test(value);
+  if (/\bprepare (visit|lead) brief\b/.test(value) && !/\b(prepara|preparame|preparar|resume|resumeme|resumen|briefing|dossier)\b/.test(value)) return undefined;
+  if (/\b(automatizacion|automatitzacio|automation|campana|workflow)\b/.test(value)) return undefined;
+  const preparation = /\b(prepara|preparame|prepararme|preparala|preparalo|preparar|preparacio|preparacion|briefing|dossier|resume|resumeme|resumen operativo|ficha de preparacion)\b/.test(value);
   const visit = /\b(visita|visites)\b/.test(value);
-  return preparation && visit;
+  const lead = /\b(lead|leads|cliente|clientes)\b/.test(value);
+  const property = /\b(inmueble|inmuebles|propiedad|propiedades|piso|pisos|casa|casas)\b/.test(value);
+  if (!preparation || property || visit === lead) return undefined;
+  return visit ? "prepare-visit-brief" : "prepare-lead-brief";
+}
+
+export function isPrepareVisitBriefIntent(message: string): boolean {
+  return classifyBriefSkillIntent(message) === "prepare-visit-brief";
+}
+
+export function isPrepareLeadBriefIntent(message: string): boolean {
+  return classifyBriefSkillIntent(message) === "prepare-lead-brief";
 }
 
 function latestSelectedProperty(messages: readonly AgentMessageRecord[]): EntityRef | undefined {

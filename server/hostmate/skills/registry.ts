@@ -52,6 +52,8 @@ const skill = (definition: SkillDefinition): SkillDefinition => Object.freeze({
 
 const prepareVisitBriefSkill = readFileSync(resolve(process.cwd(), ".agents/skills/prepare-visit-brief/SKILL.md"), "utf8");
 const prepareVisitBrief = parseSkillMarkdown(prepareVisitBriefSkill);
+const prepareLeadBriefSkill = readFileSync(resolve(process.cwd(), ".agents/skills/prepare-lead-brief/SKILL.md"), "utf8");
+const prepareLeadBrief = parseSkillMarkdown(prepareLeadBriefSkill);
 
 const planned = (input: Omit<SkillDefinition, "description" | "sourcePath" | "status" | "trustedSource">): SkillDefinition => skill({
   ...input, description: input.title, sourcePath: "legacy:foundation-placeholder", status: "planned", trustedSource: "engineering-repository",
@@ -82,6 +84,23 @@ export const FOUNDATION_SKILLS: readonly SkillDefinition[] = Object.freeze([
     modelCompatibility: ["openrouter"],
     trustedSource: "engineering-repository",
     content: prepareVisitBriefSkill.replace(/\r\n/g, "\n").trim(),
+  }),
+  skill({
+    id: prepareLeadBrief.frontmatter.name,
+    version: 1,
+    title: "Prepare lead brief",
+    description: prepareLeadBrief.frontmatter.description,
+    sourcePath: ".agents/skills/prepare-lead-brief/SKILL.md",
+    compatibleProfiles: ["crm"],
+    objectiveClasses: ["lead.prepare_brief"],
+    requiredToolCapabilities: ["crm.lead.context"],
+    optionalToolCapabilities: [],
+    securityClass: "standard",
+    status: "active",
+    featureGate: "AGENT_PLATFORM_SKILLS_PREPARE_LEAD_BRIEF_ENABLED",
+    modelCompatibility: ["openrouter"],
+    trustedSource: "engineering-repository",
+    content: prepareLeadBriefSkill.replace(/\r\n/g, "\n").trim(),
   }),
 ]);
 
