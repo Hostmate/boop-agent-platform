@@ -106,7 +106,7 @@ Cada escenario declara `shouldDraft`, risk, Lead, Property, Opportunity, Agent, 
 
 ## 27. Browser E2E
 
-El harness live de staging ejecutó A–J contra el mismo API/runtime/Convex desplegado: Draft sin mutación, cancel, commit, refresh, double click, TOCTOU, Property stale, assignment stale, advisory visible y hora ambigua. La UI real de staging se inspeccionó en Chrome; 390×844 tuvo `scrollWidth=390`, sin overflow. La tarjeta real se cubre además por test de componente con payload R2; la sesión Chrome disponible era un agente normal y confirmó correctamente DENY para creación admin-only.
+El harness live de staging ejecutó A–J contra el mismo API/runtime/Convex desplegado: Draft sin mutación, cancel, commit, refresh, double click, TOCTOU, Property stale, assignment stale, advisory visible y hora ambigua. El Browser E2E autenticado recorrió búsqueda y selección de Lead e inmueble, preparación y confirmación sobre la UI real: la card mostró R2, Lead, inmueble, fecha, hora Europe/Madrid, duración, comercial, estado inicial y efectos; antes de confirmar hubo cero mutaciones y después hubo exactamente una Visit, un receipt y un efecto. En 390×844 se obtuvo `scrollWidth=390`, sin overflow. La sesión temporal se cerró, se restauró el hash original del administrador y el audit final confirmó cero fixtures y artefactos residuales. Una sesión de agente normal también confirmó correctamente DENY para la creación admin-only.
 
 ## 28. Concurrent-Draft proof
 
