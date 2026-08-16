@@ -1,9 +1,8 @@
 import type { ActorContext } from "../../contracts/actor-context.js";
-import type { CrmUpdateLeadStatusInput, LeadStatusPreparation, LeadStatusWritePort } from "./update-lead-status.js";
-import { LeadStatusWritePortError } from "./update-lead-status.js";
-import type { SafeWriteCommitResult } from "../../drafts/safe-write-commit-registry.js";
+import { SafeWriteCommitError, type SafeWriteCommitErrorCode, type SafeWriteCommitResult } from "../../drafts/safe-write-commit-registry.js";
+import type { CrmAddLeadNoteInput, LeadNotePreparation, LeadNoteWritePort } from "./add-lead-note.js";
 
-export class HostmateHttpLeadStatusWritePort implements LeadStatusWritePort {
+export class HostmateHttpLeadNoteWritePort implements LeadNoteWritePort {
   constructor(
     private readonly baseUrl: string,
     private readonly actorToken: string,
@@ -20,18 +19,18 @@ export class HostmateHttpLeadStatusWritePort implements LeadStatusWritePort {
     });
     const payload = await response.json() as { success?: boolean; data?: T; error?: string };
     if (!response.ok || !payload.success || !payload.data) {
-      const code = ["NOT_FOUND", "PERMISSION_DENIED", "STALE_REFERENCE", "PRECONDITION_FAILED", "CONFLICT"].includes(payload.error ?? "")
-        ? payload.error as LeadStatusWritePortError["code"] : "CONFLICT";
-      throw new LeadStatusWritePortError(code, payload.error ?? `Hostmate write facade failed (${response.status})`);
+      const supported: SafeWriteCommitErrorCode[] = ["NOT_FOUND", "PERMISSION_DENIED", "STALE_REFERENCE", "PRECONDITION_FAILED", "CONFLICT"];
+      const code = supported.includes(payload.error as SafeWriteCommitErrorCode) ? payload.error as SafeWriteCommitErrorCode : "CONFLICT";
+      throw new SafeWriteCommitError(code, payload.error ?? `Hostmate write facade failed (${response.status})`);
     }
     return payload.data;
   }
 
-  prepare(_actor: ActorContext, input: CrmUpdateLeadStatusInput): Promise<LeadStatusPreparation> {
-    return this.call("/api/v2/internal/agent-platform/crm/prepare-lead-status-update", input);
+  prepare(_actor: ActorContext, input: CrmAddLeadNoteInput): Promise<LeadNotePreparation> {
+    return this.call("/api/v2/internal/agent-platform/crm/prepare-lead-note", input);
   }
 
   commit(_actor: ActorContext, input: { signedIntent: unknown }): Promise<SafeWriteCommitResult> {
-    return this.call("/api/v2/internal/agent-platform/crm/commit-lead-status-update", input);
+    return this.call("/api/v2/internal/agent-platform/crm/commit-lead-note", input);
   }
 }

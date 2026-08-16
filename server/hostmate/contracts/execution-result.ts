@@ -69,9 +69,10 @@ export type ActionConfirmationBlock = Readonly<{
   title: string;
   description: string;
   target: EntityRef;
-  changes: readonly Readonly<{ field: string; from: string; to: string }>[];
+  changes: readonly Readonly<{ field: string; from?: string; to: string }>[];
   risk: Exclude<import("./domain.js").RiskLevel, "R0">;
   expiresAt: number;
+  successMessage?: string;
 }>;
 
 export type AgentContentBlock = EntityListBlock | EntityDetailBlock | BriefBlock | MultiAgentSummaryBlock | ActionConfirmationBlock;

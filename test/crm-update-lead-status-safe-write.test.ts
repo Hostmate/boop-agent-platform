@@ -23,7 +23,7 @@ function signed(): { intent: SignedWriteIntent; token: string } {
     sessionId: actor.sessionId, permissionsVersion: actor.permissionsVersion, effectiveTenantOverride: false,
     conversationId: "123e4567-e89b-42d3-a456-426614174301", sourceRunId: "123e4567-e89b-42d3-a456-426614174302",
     profileId: "crm", toolId: "crm.update_lead_status.v1", toolVersion: 1, toolScope: ["crm.update_lead_status.v1@1"],
-    target: { type: "crm.lead", id: "123", label: "Fixture" }, operation: "lead.status.set", requestedValue: "qualified",
+    target: { type: "crm.lead", id: "123", label: "Fixture" }, operationType: "update", operation: "lead.status.set", requestedValue: "qualified",
     preconditions: [{ kind: "lead.status", expected: "contacted" }, { kind: "lead.assigned_agent_id", expected: "43" }],
     argsHash: hashDraftArguments({ lead: { type: "crm.lead", id: "123" }, requestedStatus: "qualified" }),
     idempotencyKey: "agent-write:123e4567-e89b-42d3-a456-426614174300", risk: "R1",

@@ -48,6 +48,7 @@ export type WriteIntentEnvelope = Readonly<{
   toolVersion: number;
   toolScope: readonly string[];
   target: EntityRef;
+  operationType: "update" | "create";
   operation: string;
   requestedValue: string;
   preconditions: readonly { kind: string; expected: string }[];

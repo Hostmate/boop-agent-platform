@@ -84,7 +84,7 @@ export type WriteIntentRecord = Readonly<{
   confirmedAt?: number;
   commitStartedAt?: number;
   terminalAt?: number;
-  result?: Readonly<{ outcome: string; idempotent?: boolean }>;
+  result?: Readonly<{ outcome: string; idempotent?: boolean; entity?: EntityRef }>;
   errorCode?: string;
 }>;
 
@@ -114,5 +114,5 @@ export interface ControlPlaneRepository {
   confirmWriteIntent(actor: ActorContext, input: { draftId: string; now: number }): Promise<WriteIntentRecord>;
   claimWriteIntentCommit(actor: ActorContext, input: { draftId: string; now: number }): Promise<WriteIntentRecord>;
   cancelWriteIntent(actor: ActorContext, input: { draftId: string; now: number }): Promise<WriteIntentRecord>;
-  finalizeWriteIntent(actor: ActorContext, input: { draftId: string; expectedStatus: "committing"; status: "committed" | "failed" | "stale"; now: number; result?: { outcome: string; idempotent?: boolean }; errorCode?: string }): Promise<WriteIntentRecord>;
+  finalizeWriteIntent(actor: ActorContext, input: { draftId: string; expectedStatus: "committing"; status: "committed" | "failed" | "stale"; now: number; result?: { outcome: string; idempotent?: boolean; entity?: EntityRef }; errorCode?: string }): Promise<WriteIntentRecord>;
 }

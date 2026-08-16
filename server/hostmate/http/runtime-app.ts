@@ -23,22 +23,35 @@ import { BoopScopedMemoryRepository, type PropertyOrderRecall } from '../memory/
 import { ExplicitUserMemoryVerticalSlice } from '../vertical-slices/explicit-user-memory.js';
 import { createRuntimeSkillExecutor } from '../skills/runtime-dispatcher.js';
 import { classifyOrchestrationIntent, createRuntimeOrchestrationExecutor } from '../orchestration/runtime-dispatcher.js';
-import { classifyLeadStatusWriteIntent, LeadStatusWritePortError } from '../product-tools/crm/update-lead-status.js';
+import { classifyLeadStatusWriteIntent, CRM_UPDATE_LEAD_STATUS_PERMISSION, CRM_UPDATE_LEAD_STATUS_TOOL_ID, CRM_UPDATE_LEAD_STATUS_TOOL_VERSION } from '../product-tools/crm/update-lead-status.js';
 import { HostmateHttpLeadStatusWritePort as HttpLeadStatusWritePort } from '../product-tools/crm/hostmate-http-lead-status-write-port.js';
 import { CrmUpdateLeadStatusVerticalSlice } from '../vertical-slices/crm-update-lead-status.js';
+import { classifyLeadNoteWriteIntent, CRM_ADD_LEAD_NOTE_PERMISSION, CRM_ADD_LEAD_NOTE_TOOL_ID, CRM_ADD_LEAD_NOTE_TOOL_VERSION } from '../product-tools/crm/add-lead-note.js';
+import { HostmateHttpLeadNoteWritePort } from '../product-tools/crm/hostmate-http-lead-note-write-port.js';
+import { CrmAddLeadNoteVerticalSlice } from '../vertical-slices/crm-add-lead-note.js';
 import { verifyWriteIntentConfirmationToken, verifyWriteIntentSignature } from '../drafts/contracts.js';
 import type { SignedWriteIntent } from '../drafts/contracts.js';
 import type { ActorContext } from '../contracts/actor-context.js';
+import { SafeWriteCommitError, SafeWriteCommitRegistry } from '../drafts/safe-write-commit-registry.js';
 
 const requestSchema = z.object({
   conversationId: z.string().uuid(),
-  message: z.string().trim().min(1).max(500),
+  message: z.string().trim().min(1).max(10_500),
   selectedEntityRef: entityRefSchema.extend({ type: z.enum(["crm.lead", "visits.visit", "visits.group_visit", "property.property"]) }).strict().optional(),
 }).strict();
 
 type RuntimeTurnRequest = z.infer<typeof requestSchema>;
 type RuntimeRequestContext = { requestId: string; abortController: AbortController };
 type RuntimeTurnExecutor = (token: string, input: RuntimeTurnRequest, context: RuntimeRequestContext) => Promise<unknown>;
+
+export function safeWriteErrorSignal(error: unknown): string {
+  if (!error || typeof error !== "object") return String(error);
+  const candidate = error as { message?: unknown; data?: unknown };
+  const data = typeof candidate.data === "string"
+    ? candidate.data
+    : candidate.data === undefined ? "" : JSON.stringify(candidate.data);
+  return `${typeof candidate.message === "string" ? candidate.message : String(error)} ${data}`.trim();
+}
 
 export type AgentPlatformRuntimeConfig = Readonly<{
   convexUrl: string;
@@ -85,7 +98,7 @@ export type AgentPlatformRuntimeConfig = Readonly<{
 export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig) {
   const app = express();
   const openRouterTelemetry = new OpenRouterTelemetryMonitor();
-  const capabilities = ["crm.search_leads.v1", "crm.get_lead_context.v1", "visits.list_lead_visits.v1", "visits.get_visit.v1", "property.search_properties.v1", "property.get_property.v1", "skill.prepare-visit-brief.v1", "skill.prepare-lead-brief.v1", "crm.update_lead_status.v1"] as const;
+  const capabilities = ["crm.search_leads.v1", "crm.get_lead_context.v1", "visits.list_lead_visits.v1", "visits.get_visit.v1", "property.search_properties.v1", "property.get_property.v1", "skill.prepare-visit-brief.v1", "skill.prepare-lead-brief.v1", "crm.update_lead_status.v1", "crm.add_lead_note.v1"] as const;
   const maxConcurrentTurns = Math.max(1, Math.floor(config.maxConcurrentTurns ?? 8));
   let activeTurns = 0;
   const verifyActorToken = config.verifyActorToken ?? (
@@ -118,6 +131,20 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
     const classificationStartedAt = performance.now();
     const memoryCommand = classifyExplicitMemoryCommand(input.message);
     const classificationMs = performance.now() - classificationStartedAt;
+    const noteWriteIntent = classifyLeadNoteWriteIntent(input.message);
+    if (noteWriteIntent.kind !== "none") {
+      const writePort = new HostmateHttpLeadNoteWritePort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal);
+      return {
+        ...await new CrmAddLeadNoteVerticalSlice(repository, writePort, config.safeWrites ?? {
+          enabled: false, allowedTenantIds: [], allowedUserIds: [], signingSecret: "disabled-disabled-disabled-disabled",
+        }).execute(actor, {
+          conversationId: input.conversationId, message: input.message, selectedEntityRef: input.selectedEntityRef,
+          content: noteWriteIntent.kind === "note" ? noteWriteIntent.content : undefined,
+          issue: noteWriteIntent.kind === "needs_input" ? noteWriteIntent.reason : undefined,
+        }),
+        controlPlaneWrites: convex.writeMetrics(),
+      };
+    }
     const statusWriteIntent = classifyLeadStatusWriteIntent(input.message);
     if (statusWriteIntent.kind !== "none") {
       const writePort = new HttpLeadStatusWritePort(config.hostmateApiBaseUrl, token, fetch, context.requestId, context.abortController.signal);
@@ -203,18 +230,32 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
     }
     const actor = createActorContext({ ...trusted, isSuperAdmin: trusted.role === "superadmin" });
     if (!config.safeWrites?.enabled || !config.safeWrites.allowedTenantIds.includes(actor.tenantId)
-      || !config.safeWrites.allowedUserIds.includes(actor.userId) || !actor.permissions.includes("crm.write")) {
+      || !config.safeWrites.allowedUserIds.includes(actor.userId)) {
       throw new Error("SAFE_WRITES_FORBIDDEN");
     }
     return { actor, repository: new ConvexControlPlaneRepository(convex), convex };
   }
 
+  function commitRegistry(token = "", requestId?: string): SafeWriteCommitRegistry {
+    return new SafeWriteCommitRegistry([
+      {
+        toolId: CRM_UPDATE_LEAD_STATUS_TOOL_ID, toolVersion: CRM_UPDATE_LEAD_STATUS_TOOL_VERSION,
+        requiredPermission: CRM_UPDATE_LEAD_STATUS_PERMISSION, operationType: "update", operation: "lead.status.set",
+        commit: (actor, intent) => new HttpLeadStatusWritePort(config.hostmateApiBaseUrl, token, fetch, requestId).commit(actor, { signedIntent: intent }),
+      },
+      {
+        toolId: CRM_ADD_LEAD_NOTE_TOOL_ID, toolVersion: CRM_ADD_LEAD_NOTE_TOOL_VERSION,
+        requiredPermission: CRM_ADD_LEAD_NOTE_PERMISSION, operationType: "create", operation: "lead.note.append",
+        commit: (actor, intent) => new HostmateHttpLeadNoteWritePort(config.hostmateApiBaseUrl, token, fetch, requestId).commit(actor, { signedIntent: intent }),
+      },
+    ]);
+  }
+
   function assertIntentOwner(actor: ActorContext, intent: SignedWriteIntent): void {
     const envelope = intent.envelope;
     if (!config.safeWrites || !verifyWriteIntentSignature(intent, config.safeWrites.signingSecret)) throw new Error("DRAFT_SIGNATURE_INVALID");
-    if (envelope.tenantId !== actor.tenantId || envelope.actorUserId !== actor.userId
-      || envelope.toolId !== "crm.update_lead_status.v1" || envelope.toolVersion !== 1
-      || envelope.toolScope.length !== 1 || envelope.toolScope[0] !== "crm.update_lead_status.v1@1") {
+    commitRegistry().resolve(intent);
+    if (envelope.tenantId !== actor.tenantId || envelope.actorUserId !== actor.userId) {
       throw new Error("DRAFT_ACTOR_MISMATCH");
     }
   }
@@ -305,28 +346,52 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
       const record = await repository.getWriteIntent(actor, params.data.draftId);
       if (!record) return res.status(404).json({ success: false, error: "DRAFT_NOT_FOUND" });
       assertIntentAuthority(actor, record.intent);
+      const registry = commitRegistry(token, String(req.headers["x-request-id"] ?? randomUUID()));
+      const definition = registry.resolve(record.intent);
+      if (!actor.isSuperAdmin && !actor.permissions.includes(definition.requiredPermission)) throw new Error("SAFE_WRITES_FORBIDDEN");
       if (!verifyWriteIntentConfirmationToken(record.intent, body.data.confirmationToken)) throw new Error("DRAFT_TOKEN_INVALID");
       if (record.status === "committed") return res.json({ success: true, data: { draftId: params.data.draftId, status: "committed", idempotent: true } });
-      const confirmed = await repository.confirmWriteIntent(actor, { draftId: params.data.draftId, now: Date.now() });
+      const confirmationNow = Date.now();
+      const confirmed = await repository.confirmWriteIntent(actor, { draftId: params.data.draftId, now: confirmationNow });
       if (confirmed.status === "expired") {
         await appendWriteEvent(repository, actor, record.intent, "draft.expired", { draftId: params.data.draftId });
         await repository.updateRun(actor, record.intent.envelope.sourceRunId, { status: "failed", errorCode: "DRAFT_EXPIRED", resultSummary: "Draft expired", completedAt: Date.now() }, "awaiting_confirmation");
         return res.status(409).json({ success: false, error: "DRAFT_EXPIRED" });
       }
-      if (record.status === "proposed") await appendWriteEvent(repository, actor, record.intent, "draft.confirmed", { draftId: params.data.draftId, actorUserId: actor.userId });
-      const claimed = await repository.claimWriteIntentCommit(actor, { draftId: params.data.draftId, now: Date.now() });
+      if (record.status === "proposed" && confirmed.confirmedAt === confirmationNow) {
+        await appendWriteEvent(repository, actor, record.intent, "draft.confirmed", { draftId: params.data.draftId, actorUserId: actor.userId });
+      }
+      let claimed;
+      try {
+        claimed = await repository.claimWriteIntentCommit(actor, { draftId: params.data.draftId, now: Date.now() });
+      } catch (error) {
+        if (!safeWriteErrorSignal(error).includes("WRITE_INTENT_COMMIT_IN_PROGRESS")) throw error;
+        // A concurrent confirmation already owns the short Convex commit
+        // lease. Wait for its terminal result so double-click/retry callers
+        // observe idempotent success instead of a transient failure.
+        let concurrent = await repository.getWriteIntent(actor, params.data.draftId);
+        for (let attempt = 0; attempt < 50 && concurrent?.status === "committing"; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          concurrent = await repository.getWriteIntent(actor, params.data.draftId);
+        }
+        if (concurrent?.status === "committed") {
+          return res.json({ success: true, data: { draftId: params.data.draftId, status: "committed", idempotent: true } });
+        }
+        if (concurrent?.status === "stale") return res.status(409).json({ success: false, error: "DRAFT_STALE" });
+        if (concurrent?.status === "failed") return res.status(500).json({ success: false, error: concurrent.errorCode ?? "INTERNAL_ERROR" });
+        return res.status(409).json({ success: false, error: "DRAFT_IN_PROGRESS" });
+      }
       if (claimed.status === "committed") return res.json({ success: true, data: { draftId: params.data.draftId, status: "committed", idempotent: true } });
       await appendWriteEvent(repository, actor, record.intent, "write.started", { draftId: params.data.draftId, toolId: record.intent.envelope.toolId });
-      const port = new HttpLeadStatusWritePort(config.hostmateApiBaseUrl, token, fetch, String(req.headers["x-request-id"] ?? randomUUID()));
       try {
-        const committed = await port.commit(actor, { signedIntent: record.intent });
+        const committed = await definition.commit(actor, record.intent);
         await repository.finalizeWriteIntent(actor, { draftId: params.data.draftId, expectedStatus: "committing", status: "committed", now: Date.now(), result: committed });
         await appendWriteEvent(repository, actor, record.intent, "write.committed", { draftId: params.data.draftId, outcome: committed.outcome, idempotent: committed.idempotent });
         const run = await repository.getRun(actor, record.intent.envelope.sourceRunId);
         if (run?.status === "awaiting_confirmation") await repository.updateRun(actor, run.runId, { status: "completed", resultSummary: "Confirmed write committed", completedAt: Date.now() }, "awaiting_confirmation");
         return res.json({ success: true, data: { draftId: params.data.draftId, status: "committed", idempotent: committed.idempotent } });
       } catch (error) {
-        const code = error instanceof LeadStatusWritePortError ? error.code : "INTERNAL";
+        const code = error instanceof SafeWriteCommitError ? error.code : "INTERNAL";
         const stale = code === "PRECONDITION_FAILED" || code === "STALE_REFERENCE";
         await repository.finalizeWriteIntent(actor, { draftId: params.data.draftId, expectedStatus: "committing", status: stale ? "stale" : "failed", now: Date.now(), errorCode: code });
         await appendWriteEvent(repository, actor, record.intent, stale ? "draft.stale" : "write.failed", { draftId: params.data.draftId, errorCode: code });
@@ -336,7 +401,7 @@ export function createAgentPlatformRuntimeApp(config: AgentPlatformRuntimeConfig
         return res.status(stale ? 409 : code === "PERMISSION_DENIED" ? 403 : 500).json({ success: false, error: stale ? "DRAFT_STALE" : code });
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = safeWriteErrorSignal(error);
       const forbidden = /FORBIDDEN|ACTOR_MISMATCH/.test(message);
       const conflict = /IN_PROGRESS|CANCELLED|STALE|EXPIRED|NOT_CONFIRMED/.test(message);
       return res.status(forbidden ? 403 : conflict ? 409 : /TOKEN|SIGNATURE|INVALID/.test(message) ? 400 : 500).json({ success: false, error: forbidden ? "FORBIDDEN" : conflict ? "DRAFT_CONFLICT" : /TOKEN/.test(message) ? "DRAFT_TOKEN_INVALID" : /SIGNATURE/.test(message) ? "DRAFT_SIGNATURE_INVALID" : "INTERNAL_ERROR" });

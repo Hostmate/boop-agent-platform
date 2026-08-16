@@ -1,7 +1,7 @@
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Server } from "node:http";
-import { createAgentPlatformRuntimeApp, type AgentPlatformRuntimeConfig } from "../server/hostmate/http/runtime-app.js";
+import { createAgentPlatformRuntimeApp, safeWriteErrorSignal, type AgentPlatformRuntimeConfig } from "../server/hostmate/http/runtime-app.js";
 
 const servers: Server[] = [];
 
@@ -31,6 +31,11 @@ const turnBody = {
 };
 
 describe("Hostmate managed runtime HTTP boundary", () => {
+  it("preserves Convex error data used by concurrent safe-write recovery", () => {
+    expect(safeWriteErrorSignal({ message: "Server Error", data: "WRITE_INTENT_COMMIT_IN_PROGRESS" }))
+      .toContain("WRITE_INTENT_COMMIT_IN_PROGRESS");
+  });
+
   it("exposes separate liveness and readiness probes", async () => {
     let ready = true;
     const baseUrl = await serve({ isReady: () => ready });

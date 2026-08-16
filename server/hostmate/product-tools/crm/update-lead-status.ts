@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { ActorContext } from "../../contracts/actor-context.js";
 import { entityRefSchema } from "../../contracts/execution-result.js";
 import type { ProductToolDefinition } from "../../tools/registry.js";
+import { SafeWriteCommitError, type SafeWriteCommitResult } from "../../drafts/safe-write-commit-registry.js";
 
 export const CRM_UPDATE_LEAD_STATUS_TOOL_ID = "crm.update_lead_status.v1";
 export const CRM_UPDATE_LEAD_STATUS_TOOL_VERSION = 1;
@@ -30,15 +31,15 @@ export type LeadStatusPreparation = Readonly<{
 
 export interface LeadStatusWritePort {
   prepare(actor: ActorContext, input: CrmUpdateLeadStatusInput): Promise<LeadStatusPreparation>;
-  commit(actor: ActorContext, input: { signedIntent: unknown }): Promise<{ outcome: "committed"; idempotent: boolean }>;
+  commit(actor: ActorContext, input: { signedIntent: unknown }): Promise<SafeWriteCommitResult>;
 }
 
-export class LeadStatusWritePortError extends Error {
+export class LeadStatusWritePortError extends SafeWriteCommitError {
   constructor(
     public readonly code: "NOT_FOUND" | "PERMISSION_DENIED" | "STALE_REFERENCE" | "PRECONDITION_FAILED" | "CONFLICT",
     message: string,
   ) {
-    super(message);
+    super(code, message);
     this.name = "LeadStatusWritePortError";
   }
 }
