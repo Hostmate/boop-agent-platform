@@ -100,6 +100,10 @@ function isDemonstrative(message: string): boolean {
     || /\b(este|esta|ese|esa)\b/.test(value) && /\b(inmueble|piso|casa|propiedad)\b/.test(value);
 }
 
+function isPropertyAnaphora(message: string): boolean {
+  return /\b(el|la|al|a la)\s+de\b/.test(normalizeGroundingText(message));
+}
+
 function numericValues(value: string): number[] {
   const text = normalizeGroundingText(value);
   const values: number[] = [];
@@ -157,7 +161,7 @@ export function propertyCandidatesBlock(candidates: readonly PropertyGroundingCa
 export function isPropertyIdentificationIntent(message: string): boolean {
   const value = normalizeGroundingText(message);
   const grounding = groundInteractionDomain(message);
-  const anaphora = isDemonstrative(message) || isOther(message) || isPrevious(message) || ordinalIndex(message) !== undefined || /\b(el|la)\s+de\b/.test(value);
+  const anaphora = isDemonstrative(message) || isOther(message) || isPrevious(message) || ordinalIndex(message) !== undefined || isPropertyAnaphora(message);
   const lookup = /\b(cuanto|costaba|precio|vale|valia|informacion|detalle|detalles|caracteristicas|superficie|ubicacion|direccion|ficha|cuentame)\b/.test(value);
   const search = /\b(busca|buscar|encuentra|encontrar|muestra|muestrame|lista|listar|localiza|localizar)\b/.test(value);
   return anaphora || (grounding.domain === "property" && (lookup || !search));

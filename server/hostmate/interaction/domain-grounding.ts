@@ -31,7 +31,7 @@ const PROPERTY_ANAPHORA = [
   "este", "esta", "ese", "esa", "el anterior", "la anterior", "el otro", "la otra",
   "anterior", "otro", "primero", "primera", "segundo", "segunda", "tercero", "tercera", "cuarto", "cuarta", "quinto", "quinta",
   "el primero", "la primera", "el segundo", "la segunda", "el tercero", "la tercera",
-  "el cuarto", "la cuarta", "el quinto", "la quinta", "el de", "la de",
+  "el cuarto", "la cuarta", "el quinto", "la quinta", "el de", "la de", "al de", "a la de",
 ] as const;
 
 function hasWord(text: string, word: string): boolean {

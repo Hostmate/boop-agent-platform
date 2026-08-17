@@ -182,6 +182,8 @@ describe("Property Interaction → Execution", () => {
     expect(classifyInteractionTurn({ message: "Cuéntame más", priorMessages })).toBe("property");
     expect(classifyInteractionTurn({ message: "No, me refería al inmueble anterior" })).toBe("property");
     expect(classifyInteractionTurn({ message: "No, el otro inmueble" })).toBe("property");
+    expect(classifyInteractionTurn({ message: "No, el otro inmueble", priorMessages })).toBe("property");
+    expect(classifyInteractionTurn({ message: "No, me refería al de Barcelona", priorMessages })).toBe("property");
     expect(classifyInteractionTurn({ message: "El de Manresa con terraza" })).toBe("property");
   });
 
@@ -199,6 +201,7 @@ describe("Property Interaction → Execution", () => {
     expect(resolvePropertyMention({ message: "el anterior", messages, selected: candidates[2]!.ref, candidates })).toMatchObject({ kind: "resolved", ref: { id: "202" }, reason: "anaphora" });
     expect(resolvePropertyMention({ message: "el de Manresa con terraza", messages, candidates })).toMatchObject({ kind: "resolved", ref: { id: "203" }, reason: "descriptive" });
     expect(resolvePropertyMention({ message: "el inmueble REF-B", messages, candidates })).toMatchObject({ kind: "resolved", ref: { id: "202" }, reason: "reference" });
+    expect(resolvePropertyMention({ message: "me refería al de Barcelona", messages, candidates })).toMatchObject({ kind: "ambiguous" });
   });
 
   it("lets a fresh previous/other grounding override the current UI selection", async () => {
