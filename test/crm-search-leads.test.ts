@@ -403,6 +403,7 @@ describe("crm.search_leads vertical slice", () => {
     expect(search.search).not.toHaveBeenCalled();
     expect(state.usage).toHaveLength(0);
     expect(state.messages.at(-1)).toMatchObject({ contextRefs: { selected: { lead: { type: "crm.lead", id: "123" } } } });
+    expect(state.messages.at(-1)).toMatchObject({ contextRefs: { selected: { visit: { type: "visits.visit", id: "91" } } } });
     expect([...state.runs.values()].find((run) => run.kind === "execution").requestedModel).toBeUndefined();
   });
 

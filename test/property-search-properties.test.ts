@@ -223,6 +223,9 @@ describe("Property Interaction → Execution", () => {
     const slice = new PropertySearchPropertiesVerticalSlice(repository, { search: async () => serviceResult(1) }, detailPort(), new OpenRouterAdapter({ apiKey: "test", fetch: fetchMock }), { model: "requested/model" });
     const search = await slice.execute(actor(), { conversationId, message: "Busca inmuebles en Manresa" });
     const ref = search.result.entities[0]!;
+    expect(state.messages.at(-1).contextRefs.selected).toMatchObject({
+      lead: { id: "4995" }, visit: { id: "458" }, property: { type: "property.property", id: "101" },
+    });
     const selected = await slice.execute(actor(), { conversationId, message: "Cuéntame más sobre Piso Estació", selectedEntityRef: ref });
     const selectedMessage = state.messages.at(-1);
     expect(selected.result.blocks).toMatchObject([{ type: "entity_detail" }]);

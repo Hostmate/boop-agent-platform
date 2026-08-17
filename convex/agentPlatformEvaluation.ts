@@ -3,7 +3,7 @@ import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/s
 import { requireAgentPlatformActor, type ConvexActor } from "./agentPlatformAuth";
 
 const expectedActorArgs = { expectedTenantId: v.optional(v.string()), expectedUserId: v.optional(v.string()) };
-const MAX_EVAL_CONVERSATIONS_PER_ACTOR = 32;
+const MAX_EVAL_CONVERSATIONS_PER_ACTOR = 64;
 
 function requireEvaluationActor(actor: ConvexActor, runId: string) {
   if (!/^memory-eval-[a-z0-9-]{8,80}$/.test(runId)) throw new ConvexError("MEMORY_EVAL_RUN_ID_INVALID");
@@ -40,6 +40,13 @@ async function collectRows(ctx: QueryCtx | MutationCtx, actor: ConvexActor, conv
   const usage = (await ctx.db.query("agentPlatformUsage")
     .withIndex("by_tenant_created", (q) => q.eq("tenantId", actor.tenantId)).collect())
     .filter((row) => row.actorUserId === actor.userId && runIds.has(row.runId));
+  const writeIntents = (await ctx.db.query("agentPlatformWriteIntents")
+    .withIndex("by_tenant_actor_created", (q) => q.eq("tenantId", actor.tenantId).eq("actorUserId", actor.userId)).collect())
+    .filter((row) => {
+      const envelope = row.intent?.envelope as { conversationId?: unknown; sourceRunId?: unknown } | undefined;
+      return (typeof envelope?.conversationId === "string" && requested.has(envelope.conversationId))
+        || (typeof envelope?.sourceRunId === "string" && runIds.has(envelope.sourceRunId));
+    });
   const memoryRecords = [];
   for (const lifecycle of ["active", "archived", "pruned"] as const) {
     memoryRecords.push(...(await ctx.db.query("memoryRecords")
@@ -50,7 +57,7 @@ async function collectRows(ctx: QueryCtx | MutationCtx, actor: ConvexActor, conv
   const memoryEvents = (await ctx.db.query("memoryEvents")
     .withIndex("by_scope_created", (q) => q.eq("tenantId", actor.tenantId).eq("ownerUserId", actor.userId).eq("scope", "user")).collect())
     .filter((row) => (row.conversationId && requested.has(row.conversationId)) || (row.memoryId && memoryIds.has(row.memoryId)));
-  return { conversations, messages, runs, attempts, events, usage, memoryRecords, memoryEvents };
+  return { conversations, messages, runs, attempts, events, usage, writeIntents, memoryRecords, memoryEvents };
 }
 
 function counts(rows: Awaited<ReturnType<typeof collectRows>>) {
@@ -68,6 +75,47 @@ export const listOwnedConversationIds = query({
       .filter((row) => row.ownerUserId === actor.userId)
       .slice(0, limit)
       .map((row) => row.conversationId);
+  },
+});
+
+/**
+ * Bounded discovery for browser-created evaluation conversations. The caller
+ * is still an authenticated evaluation actor, and the result never crosses
+ * actor ownership. This lets soak cleanup identify a precise time window
+ * before using the existing preview + explicit-confirmation deletion path.
+ */
+export const listOwnedConversationsSince = query({
+  args: {
+    runId: v.string(),
+    createdAtOrAfter: v.number(),
+    createdBefore: v.optional(v.number()),
+    limit: v.optional(v.number()),
+    ...expectedActorArgs,
+  },
+  handler: async (ctx, args) => {
+    const actor = await requireAgentPlatformActor(ctx, args);
+    requireEvaluationActor(actor, args.runId);
+    const limit = Math.max(1, Math.min(args.limit ?? MAX_EVAL_CONVERSATIONS_PER_ACTOR, MAX_EVAL_CONVERSATIONS_PER_ACTOR));
+    const conversations = (await ctx.db.query("agentPlatformConversations")
+      .withIndex("by_tenant_conversation", (q) => q.eq("tenantId", actor.tenantId)).collect())
+      .filter((row) => row.ownerUserId === actor.userId
+        && row.createdAt >= args.createdAtOrAfter
+        && (args.createdBefore == null || row.createdAt < args.createdBefore))
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .slice(0, limit);
+    const rows = [];
+    for (const conversation of conversations) {
+      const firstUserMessage = (await ctx.db.query("agentPlatformMessages")
+        .withIndex("by_tenant_conversation_sequence", (q) => q.eq("tenantId", actor.tenantId).eq("conversationId", conversation.conversationId)).collect())
+        .find((message) => message.actorUserId === actor.userId && message.role === "user");
+      rows.push({
+        conversationId: conversation.conversationId,
+        createdAt: conversation.createdAt,
+        updatedAt: conversation.updatedAt,
+        firstUserMessage: firstUserMessage?.contentRedacted.slice(0, 240) ?? null,
+      });
+    }
+    return rows;
   },
 });
 
@@ -94,6 +142,7 @@ export const cleanupOwned = mutation({
     const before = counts(rows);
     for (const row of rows.memoryEvents) await ctx.db.delete(row._id);
     for (const row of rows.memoryRecords) await ctx.db.delete(row._id);
+    for (const row of rows.writeIntents) await ctx.db.delete(row._id);
     for (const row of rows.usage) await ctx.db.delete(row._id);
     for (const row of rows.events) await ctx.db.delete(row._id);
     for (const row of rows.attempts) await ctx.db.delete(row._id);

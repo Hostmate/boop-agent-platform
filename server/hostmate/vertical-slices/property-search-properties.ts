@@ -392,6 +392,9 @@ export class PropertySearchPropertiesVerticalSlice {
       // filters that reached the canonical Hostmate service.
       if (output && sanitizedToolInput) output = { ...output, appliedFilters: sanitizedToolInput };
       if (!output) throw new OpenRouterRuntimeError("Model did not execute the scoped property search tool", "INVALID_TOOL_CALL", false);
+      if (!composed && output.total === 1 && output.matches.length === 1) {
+        context = { selected: { ...context.selected, property: output.matches[0]!.ref }, referenced: context.referenced };
+      }
       await this.repository.recordUsage(actor, {
         usageId: randomUUID(), runId: executionRunId, attemptId,
         requestedModel: runtime.requestedModel, resolvedModel: runtime.resolvedModel, provider: runtime.provider,

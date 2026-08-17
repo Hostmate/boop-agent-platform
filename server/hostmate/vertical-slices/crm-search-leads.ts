@@ -489,6 +489,9 @@ export class CrmSearchLeadsVerticalSlice {
           returned: visitsOutput.metadata.returned, hasMore: visitsOutput.metadata.hasMore,
           entityRefs: visitsOutput.visits.map((visit) => visit.ref),
         });
+        if (visitsOutput.metadata.total === 1 && visitsOutput.visits.length === 1) {
+          conversationContext = withSelectedRef(conversationContext, visitsOutput.visits[0]!.ref);
+        }
       }
 
       let detailRef = conversationContext.selected.visit;
