@@ -28,6 +28,15 @@ import { SkillRegistry } from "../skills/registry.js";
 import { ProductToolRegistry } from "../tools/registry.js";
 import type { PropertyOrderRecall } from "../memory/repository.js";
 import { explicitPropertyOrder } from "../memory/policy.js";
+import {
+  isPropertyDetailIntent,
+  isPropertyIdentificationIntent,
+  propertyAmbiguityQuestion,
+  propertyCandidatesBlock,
+  propertyGroundingCandidatesFromBlock,
+  resolvePropertyMention,
+  type PropertyGroundingCandidate,
+} from "../interaction/property-grounding.js";
 
 export type PropertySearchPropertiesSliceConfig = Readonly<{
   model: string;
@@ -171,14 +180,25 @@ function selectedProperty(messages: readonly AgentMessageRecord[]): EntityRef | 
   return ref?.type === "property.property" ? ref : undefined;
 }
 
-function isDetailIntent(message: string): boolean {
-  return /\b(cuentame mas|mas detalle|mas detalles|detalle|detalles|informacion completa|amplia|ampliar|ficha completa)\b/.test(normalize(message));
-}
+function isDetailIntent(message: string): boolean { return isPropertyDetailIntent(message); }
 
 function isComposedSearchDetail(message: string): boolean {
   const value = normalize(message);
   return /\b(busca|buscar|encuentra|encontrar|muestra|muestrame|lista)\b/.test(value)
     && /\b(detalle|detalles|cuentame mas|informacion completa|ficha completa)\b/.test(value);
+}
+
+function isDeterministicOrderedDetail(message: string, output: PropertySearchPropertiesOutput): boolean {
+  const value = normalize(message);
+  return output.matches.length > 0 && (
+    output.appliedFilters.order === "price_asc" || output.appliedFilters.order === "price_desc" || output.appliedFilters.order === "newest"
+    || /\b(mas barato|mas baratos|mas caro|mas caros|barato|caro|reciente|recientes)\b/.test(value)
+  );
+}
+
+function propertyCandidatesFromOutput(output: PropertySearchPropertiesOutput): readonly PropertyGroundingCandidate[] {
+  const block = toPropertySearchExecutionResult(output).blocks?.find((candidate): candidate is Extract<NonNullable<ExecutionResult["blocks"]>[number], { type: "entity_list" }> => candidate.type === "entity_list");
+  return block ? propertyGroundingCandidatesFromBlock(block) : [];
 }
 
 function sanitizedDetailEvent(output: PropertyGetPropertyOutput) {
@@ -261,8 +281,26 @@ export class PropertySearchPropertiesVerticalSlice {
     }
 
     const currentProperty = selectedProperty(priorMessages);
-    const detailRef = selectedItem?.ref ?? (currentProperty && isDetailIntent(message) ? currentProperty : undefined);
+    const grounding = resolvePropertyMention({ message, messages: priorMessages, selected: currentProperty });
+    if (grounding?.kind === "ambiguous") {
+      const result: ExecutionResult<PropertySearchPropertiesOutput | PropertyGetPropertyOutput> = {
+        status: "needs_input", summary: grounding.question, entities: grounding.candidates.map((candidate) => candidate.ref),
+        blocks: [propertyCandidatesBlock(grounding.candidates)],
+        errors: [{ code: "AMBIGUOUS", message: "Several authorized property candidates match the user's description.", retryable: false }],
+        suggestedNext: [grounding.question],
+      };
+      await event("interaction.property_ambiguous", {
+        reason: grounding.reason, candidateRefs: grounding.candidates.map((candidate) => candidate.ref), inferenceCount: 0,
+      });
+      await this.repository.updateRun(actor, interactionRunId, { status: "completed", resultSummary: result.summary, completedAt: Date.now() }, "running");
+      await this.persistAssistant(actor, input.conversationId, sequence, undefined, result, context);
+      return { conversationId: input.conversationId, interactionRunId, result };
+    }
+    const groundedRef = grounding?.kind === "resolved" ? grounding.ref : undefined;
+    const detailRef = selectedItem?.ref ?? groundedRef ?? (currentProperty && isDetailIntent(message) ? currentProperty : undefined);
     const composed = !detailRef && isComposedSearchDetail(message);
+    const identificationAfterSearch = !detailRef && isPropertyIdentificationIntent(message) && isPropertyDetailIntent(message);
+    const needsDetailAfterSearch = composed || identificationAfterSearch;
     if (!detailRef && !composed && isDetailIntent(message)) {
       const result: ExecutionResult<PropertySearchPropertiesOutput | PropertyGetPropertyOutput> = {
         status: "needs_input",
@@ -300,12 +338,12 @@ export class PropertySearchPropertiesVerticalSlice {
     const searchTool = createPropertySearchPropertiesTool({ port: boundPort, onResult: (result) => { output = result; } });
     const detailTool = createPropertyGetPropertyTool({ port: this.propertyDetail, onResult: (result) => { detailOutput = result; } });
     const toolRegistry = new ProductToolRegistry([searchTool, detailTool]);
-    const allowedToolIds = composed ? [PROPERTY_SEARCH_PROPERTIES_TOOL_ID, PROPERTY_GET_PROPERTY_TOOL_ID] : [PROPERTY_SEARCH_PROPERTIES_TOOL_ID];
-    const objectiveCapabilities = composed ? ["property.property.search", "property.property.read"] : ["property.property.search"];
+    const allowedToolIds = needsDetailAfterSearch ? [PROPERTY_SEARCH_PROPERTIES_TOOL_ID, PROPERTY_GET_PROPERTY_TOOL_ID] : [PROPERTY_SEARCH_PROPERTIES_TOOL_ID];
+    const objectiveCapabilities = needsDetailAfterSearch ? ["property.property.search", "property.property.read"] : ["property.property.search"];
     const dispatch = new ExecutionDispatchResolver(new ExecutionProfileRegistry(), toolRegistry, new SkillRegistry()).resolve({
       actor, allowedToolIds, featureEnabled: (toolId) => allowedToolIds.includes(toolId),
       request: {
-        profileId: "property", objective: message, objectiveClasses: composed ? ["property.search", "property.lookup"] : ["property.search"], objectiveCapabilities,
+        profileId: "property", objective: message, objectiveClasses: needsDetailAfterSearch ? ["property.search", "property.lookup"] : ["property.search"], objectiveCapabilities,
         inputRefs: [], dependencyRunIds: [], internalSkillHints: [], constraints: { readOnly: true, maxResults: 6 },
       },
     });
@@ -392,8 +430,30 @@ export class PropertySearchPropertiesVerticalSlice {
       // filters that reached the canonical Hostmate service.
       if (output && sanitizedToolInput) output = { ...output, appliedFilters: sanitizedToolInput };
       if (!output) throw new OpenRouterRuntimeError("Model did not execute the scoped property search tool", "INVALID_TOOL_CALL", false);
-      if (!composed && output.total === 1 && output.matches.length === 1) {
-        context = { selected: { ...context.selected, property: output.matches[0]!.ref }, referenced: context.referenced };
+      let result: ExecutionResult<PropertySearchPropertiesOutput | PropertyGetPropertyOutput> = toPropertySearchExecutionResult(output);
+      let selectedSearchRef: EntityRef | undefined;
+      const outputCandidates = propertyCandidatesFromOutput(output);
+      const identificationResolution = isPropertyIdentificationIntent(message) && outputCandidates.length
+        ? resolvePropertyMention({ message, messages: priorMessages, selected: currentProperty, candidates: outputCandidates })
+        : undefined;
+      const deterministicOrderedDetail = needsDetailAfterSearch && isDeterministicOrderedDetail(message, output);
+      if ((identificationResolution?.kind === "ambiguous" && !deterministicOrderedDetail) || (!identificationResolution && needsDetailAfterSearch && outputCandidates.length > 1 && !deterministicOrderedDetail)) {
+        const ambiguousCandidates = identificationResolution?.kind === "ambiguous" ? identificationResolution.candidates : outputCandidates;
+        const question = identificationResolution?.kind === "ambiguous" ? identificationResolution.question : propertyAmbiguityQuestion(ambiguousCandidates);
+        result = {
+          status: "needs_input", summary: question, entities: ambiguousCandidates.map((candidate) => candidate.ref), data: output,
+          blocks: [propertyCandidatesBlock(ambiguousCandidates)],
+          errors: [{ code: "AMBIGUOUS", message: "Several property candidates remain after canonical search.", retryable: false }],
+          suggestedNext: [question],
+        };
+        await event("property.search.ambiguous", { candidateRefs: ambiguousCandidates.map((candidate) => candidate.ref), inferenceCount: 1 });
+      } else {
+        selectedSearchRef = identificationResolution?.kind === "resolved"
+          ? identificationResolution.ref
+          : output.total === 1 && output.matches.length === 1
+            ? output.matches[0]!.ref
+            : isDeterministicOrderedDetail(message, output) ? output.matches[0]?.ref : undefined;
+        if (selectedSearchRef) context = { selected: { ...context.selected, property: selectedSearchRef }, referenced: context.referenced };
       }
       await this.repository.recordUsage(actor, {
         usageId: randomUUID(), runId: executionRunId, attemptId,
@@ -404,9 +464,9 @@ export class PropertySearchPropertiesVerticalSlice {
         fallbackUsed: runtime.detailedUsage.fallbackUsed, finishReason: runtime.finishReason, createdAt: Date.now(),
       });
       await event("model.completed", { inference: 1, requestedModel: runtime.requestedModel, resolvedModel: runtime.resolvedModel, provider: runtime.provider, finishReason: runtime.finishReason, usage: runtime.detailedUsage, latencyMs: runtime.latencyMs });
-      let result: ExecutionResult<PropertySearchPropertiesOutput | PropertyGetPropertyOutput> = toPropertySearchExecutionResult(output);
-      if (composed && output.matches.length > 0) {
-        const selected = output.matches[0]!;
+      if (result.status !== "needs_input" && needsDetailAfterSearch && selectedSearchRef) {
+        const selected = output.matches.find((match) => match.ref.id === selectedSearchRef.id);
+        if (!selected) throw new OpenRouterRuntimeError("Resolved property candidate is absent from the canonical result", "STALE_REFERENCE", false);
         const detailRuntimeTool = runtimeTools.find((tool) => tool.namespace === "property" && tool.name === "get_property");
         if (!detailRuntimeTool) throw new Error("PERMISSION_DENIED: property detail tool unavailable");
         const detailInput: PropertyGetPropertyInput = { property: selected.ref };
@@ -540,7 +600,12 @@ export class PropertySearchPropertiesVerticalSlice {
   }
 
   private async persistAssistant(actor: ActorContext, conversationId: string, sequence: number, runId: string | undefined, result: ExecutionResult<PropertySearchPropertiesOutput | PropertyGetPropertyOutput>, context: ConversationContextRefs) {
-    const referenced = [...new Map(result.entities.map((ref) => [`${ref.type}:${ref.id}`, ref])).values()];
+    const blockRefs = (result.blocks ?? []).flatMap((block) => {
+      if (block.type === "entity_list") return block.items.map((item) => item.ref);
+      if (block.type === "entity_detail") return [block.ref];
+      return [];
+    });
+    const referenced = [...new Map([...result.entities, ...blockRefs, ...context.referenced].map((ref) => [`${ref.type}:${ref.id}`, ref])).values()].slice(0, 24);
     await this.repository.appendMessage(actor, {
       messageId: randomUUID(), conversationId, role: "assistant", contentRedacted: result.summary,
       blocks: result.blocks, contextRefs: { selected: context.selected, referenced }, runId, sequence, createdAt: Date.now(),

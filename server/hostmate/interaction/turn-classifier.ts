@@ -1,8 +1,9 @@
 import type { EntityRef } from "../contracts/domain.js";
 import type { AgentMessageRecord } from "../control-plane/repository.js";
+import { groundInteractionDomain, normalizeGroundingText } from "./domain-grounding.js";
 
 function normalized(value: string): string {
-  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  return normalizeGroundingText(value);
 }
 
 export type BriefSkillIntent = "prepare-visit-brief" | "prepare-lead-brief";
@@ -43,13 +44,11 @@ export function classifyInteractionTurn(input: {
   priorMessages?: readonly AgentMessageRecord[];
 }): "crm" | "property" {
   if (input.selectedEntityRef) return input.selectedEntityRef.type === "property.property" ? "property" : "crm";
+  const grounding = groundInteractionDomain(input.message);
+  if (grounding.domain === "crm") return "crm";
+  if (grounding.domain === "property") return "property";
   const value = normalized(input.message);
-  const searchIntent = /\b(busca|buscar|encuentra|encontrar|ensename|muestra|muestrame|dame|lista|listar|localiza|localizar)\b/.test(value);
-  const propertyNoun = /\b(inmueble|inmuebles|propiedad|propiedades|piso|pisos|casa|casas|chalet|chalets|atico|aticos|apartamento|apartamentos|local|locales|oficina|oficinas|nave|naves|garaje|garajes|referencia)\b/.test(value);
-  if (searchIntent && propertyNoun) return "property";
-  if (propertyNoun && /\b(cuentame mas|mas detalle|mas detalles|detalle|detalles|informacion completa|ficha completa)\b/.test(value)) return "property";
-  if (/\b(visita|visitas|lead|leads|cliente|clientes)\b/.test(value)) return "crm";
   const propertySelected = latestSelectedProperty(input.priorMessages ?? []);
-  if (propertySelected && /\b(cuentame mas|mas detalle|mas detalles|detalle|informacion|selecciona|seleccionar)\b/.test(value)) return "property";
+  if (propertySelected && /\b(cuentame mas|mas detalle|mas detalles|detalle|informacion|selecciona|seleccionar|anterior|otro|primero|segundo|tercero|cuarto|quinto)\b/.test(value)) return "property";
   return "crm";
 }

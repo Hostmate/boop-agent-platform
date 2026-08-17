@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createActorContext } from "../server/hostmate/contracts/actor-context.js";
 import type { ControlPlaneRepository } from "../server/hostmate/control-plane/repository.js";
 import { classifyInteractionTurn } from "../server/hostmate/interaction/turn-classifier.js";
+import { resolvePropertyMention, type PropertyGroundingCandidate } from "../server/hostmate/interaction/property-grounding.js";
 import {
   PROPERTY_GET_PROPERTY_TOOL_ID,
   createPropertyGetPropertyTool,
@@ -179,6 +180,24 @@ describe("Property Interaction → Execution", () => {
     expect(classifyInteractionTurn({ message: "Cuéntame más sobre esta visita", selectedEntityRef: { type: "visits.visit", id: "458" }, priorMessages })).toBe("crm");
     expect(classifyInteractionTurn({ message: "Cuéntame más sobre esta visita", priorMessages })).toBe("crm");
     expect(classifyInteractionTurn({ message: "Cuéntame más", priorMessages })).toBe("property");
+    expect(classifyInteractionTurn({ message: "No, me refería al inmueble anterior" })).toBe("property");
+    expect(classifyInteractionTurn({ message: "El de Manresa con terraza" })).toBe("property");
+  });
+
+  it("grounds natural-language property references against authorized recent candidates without guessing ties", () => {
+    const candidates: PropertyGroundingCandidate[] = [
+      { ref: { type: "property.property", id: "201" }, title: "Piso Bonavista", subtitle: "REF-A · Barcelona · Bonavista", fields: [{ label: "Habitaciones", value: "3" }] },
+      { ref: { type: "property.property", id: "202" }, title: "Piso Bonavista amplio", subtitle: "REF-B · Barcelona · Bonavista", fields: [{ label: "Habitaciones", value: "4" }] },
+      { ref: { type: "property.property", id: "203" }, title: "Piso Manresa terraza", subtitle: "REF-C · Manresa", fields: [{ label: "Habitaciones", value: "3" }, { label: "Características", value: "terraza" }] },
+    ];
+    const messages = [{
+      role: "assistant", blocks: [{ type: "entity_list", title: "Inmuebles", items: candidates.map((candidate) => ({ ...candidate })) }],
+    }] as any;
+    expect(resolvePropertyMention({ message: "¿Cuánto costaba el piso de Bonavista de Barcelona?", messages, candidates })).toMatchObject({ kind: "ambiguous", candidates: [{ ref: { id: "201" } }, { ref: { id: "202" } }] });
+    expect(resolvePropertyMention({ message: "el segundo", messages, candidates })).toMatchObject({ kind: "resolved", ref: { id: "202" }, reason: "ordinal" });
+    expect(resolvePropertyMention({ message: "el anterior", messages, selected: candidates[2]!.ref, candidates })).toMatchObject({ kind: "resolved", ref: { id: "202" }, reason: "anaphora" });
+    expect(resolvePropertyMention({ message: "el de Manresa con terraza", messages, candidates })).toMatchObject({ kind: "resolved", ref: { id: "203" }, reason: "descriptive" });
+    expect(resolvePropertyMention({ message: "el inmueble REF-B", messages, candidates })).toMatchObject({ kind: "resolved", ref: { id: "202" }, reason: "reference" });
   });
 
   it("records a property run with exactly one tool, one inference and sanitized telemetry", async () => {

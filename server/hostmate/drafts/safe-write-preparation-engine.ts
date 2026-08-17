@@ -10,6 +10,7 @@ import { ExecutionProfileRegistry } from "../profiles/registry.js";
 import { SkillRegistry } from "../skills/registry.js";
 import { ProductToolRegistry } from "../tools/registry.js";
 import { hashConfirmationToken, hashDraftArguments, signWriteIntent, type SignedWriteIntent, type WriteIntentEnvelope } from "./contracts.js";
+import { normalizeExpectedExecutionError } from "./expected-outcomes.js";
 
 export type SafeWriteConfig = Readonly<{
   enabled: boolean;
@@ -206,10 +207,26 @@ export class SafeWritePreparationEngine<TInput, TPrepared> {
       resolved: dispatch.toolResolution, actor, policy: new DefaultPolicyEngine(), profileId: this.definition.profileId,
       decisionId: () => randomUUID(), hasRequiredPreconditions: () => true,
     });
-    const response = await tools[0]!.handle(this.definition.toolInput(input.value, selected, context));
-    if (!response.success) throw new Error("SAFE_WRITE_PREPARATION_FAILED");
-    const parsed = JSON.parse(response.text) as { ok: true; data: unknown };
-    const prepared = this.definition.parsePrepared(parsed.data);
+    let prepared: TPrepared;
+    try {
+      const response = await tools[0]!.handle(this.definition.toolInput(input.value, selected, context));
+      if (!response.success) throw new Error(response.text || "SAFE_WRITE_PREPARATION_FAILED");
+      const parsed = JSON.parse(response.text) as { ok: true; data: unknown };
+      prepared = this.definition.parsePrepared(parsed.data);
+    } catch (error) {
+      const expected = normalizeExpectedExecutionError(error);
+      if (!expected) throw error;
+      const result: ExecutionResult = {
+        status: expected.status, summary: expected.summary, entities: [selected],
+        errors: [{ code: expected.code, message: expected.message, retryable: expected.retryable }],
+        suggestedNext: expected.status === "needs_input" ? [expected.summary] : undefined,
+      };
+      await this.repository.updateAttempt(actor, { attemptId, expectedStatus: "running", patch: { status: "failed", completedAt: Date.now(), errorCode: expected.code } });
+      await this.repository.updateRun(actor, executionRunId, { status: "failed", errorCode: expected.code, resultSummary: result.summary, completedAt: Date.now() }, "running");
+      await event(expected.status === "permission_denied" ? "execution.policy_denied" : "execution.expected_outcome", { errorCode: expected.code, retryable: expected.retryable });
+      await this.repository.appendMessage(actor, { messageId: randomUUID(), conversationId: input.conversationId, role: "assistant", contentRedacted: result.summary, contextRefs: context, runId: executionRunId, sequence: messageSequence, createdAt: Date.now() });
+      return { conversationId: input.conversationId, interactionRunId, executionRunId, result };
+    }
     await event("tool.completed", { toolId: this.definition.toolId, ...this.definition.toolCompletedPayload(prepared) });
 
     const noOp = this.definition.noOp?.(input.value, prepared);
