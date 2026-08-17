@@ -297,7 +297,10 @@ export class PropertySearchPropertiesVerticalSlice {
       return { conversationId: input.conversationId, interactionRunId, result };
     }
     const groundedRef = grounding?.kind === "resolved" ? grounding.ref : undefined;
-    const detailRef = selectedItem?.ref ?? groundedRef ?? (currentProperty && isDetailIntent(message) ? currentProperty : undefined);
+    // A fresh natural-language grounding (for example "el anterior" or
+    // "el otro") must override the UI's currently selected reference. The
+    // explicit selection remains the fallback for generic detail requests.
+    const detailRef = groundedRef ?? selectedItem?.ref ?? (currentProperty && isDetailIntent(message) ? currentProperty : undefined);
     const composed = !detailRef && isComposedSearchDetail(message);
     const identificationAfterSearch = !detailRef && isPropertyIdentificationIntent(message) && isPropertyDetailIntent(message);
     const needsDetailAfterSearch = composed || identificationAfterSearch;

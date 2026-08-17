@@ -181,6 +181,7 @@ describe("Property Interaction → Execution", () => {
     expect(classifyInteractionTurn({ message: "Cuéntame más sobre esta visita", priorMessages })).toBe("crm");
     expect(classifyInteractionTurn({ message: "Cuéntame más", priorMessages })).toBe("property");
     expect(classifyInteractionTurn({ message: "No, me refería al inmueble anterior" })).toBe("property");
+    expect(classifyInteractionTurn({ message: "No, el otro inmueble" })).toBe("property");
     expect(classifyInteractionTurn({ message: "El de Manresa con terraza" })).toBe("property");
   });
 
@@ -198,6 +199,16 @@ describe("Property Interaction → Execution", () => {
     expect(resolvePropertyMention({ message: "el anterior", messages, selected: candidates[2]!.ref, candidates })).toMatchObject({ kind: "resolved", ref: { id: "202" }, reason: "anaphora" });
     expect(resolvePropertyMention({ message: "el de Manresa con terraza", messages, candidates })).toMatchObject({ kind: "resolved", ref: { id: "203" }, reason: "descriptive" });
     expect(resolvePropertyMention({ message: "el inmueble REF-B", messages, candidates })).toMatchObject({ kind: "resolved", ref: { id: "202" }, reason: "reference" });
+  });
+
+  it("lets a fresh previous/other grounding override the current UI selection", async () => {
+    const candidates: PropertyGroundingCandidate[] = [
+      { ref: { type: "property.property", id: "201" }, title: "Piso A", subtitle: "REF-A · Barcelona", fields: [] },
+      { ref: { type: "property.property", id: "202" }, title: "Piso B", subtitle: "REF-B · Barcelona", fields: [] },
+    ];
+    const messages = [{ role: "assistant", blocks: [{ type: "entity_list", title: "Inmuebles", items: candidates.map((candidate) => ({ ...candidate })) }] }] as any;
+    expect(resolvePropertyMention({ message: "el anterior", messages, selected: candidates[1]!.ref, candidates })).toMatchObject({ kind: "resolved", ref: { id: "201" } });
+    expect(resolvePropertyMention({ message: "el otro inmueble", messages, selected: candidates[0]!.ref, candidates })).toMatchObject({ kind: "resolved", ref: { id: "202" } });
   });
 
   it("records a property run with exactly one tool, one inference and sanitized telemetry", async () => {
