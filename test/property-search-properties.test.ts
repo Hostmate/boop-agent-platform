@@ -200,6 +200,14 @@ describe("Property Interaction → Execution", () => {
     expect(resolvePropertyMention({ message: "el segundo", messages, candidates })).toMatchObject({ kind: "resolved", ref: { id: "202" }, reason: "ordinal" });
     expect(resolvePropertyMention({ message: "el anterior", messages, selected: candidates[2]!.ref, candidates })).toMatchObject({ kind: "resolved", ref: { id: "202" }, reason: "anaphora" });
     expect(resolvePropertyMention({ message: "el de Manresa con terraza", messages, candidates })).toMatchObject({ kind: "resolved", ref: { id: "203" }, reason: "descriptive" });
+    expect(resolvePropertyMention({
+      message: "¿Qué precio tiene el ático?",
+      messages,
+      candidates: [
+        ...candidates,
+        { ref: { type: "property.property", id: "204" }, title: "Ático de Barcelona", subtitle: "REF-D · Barcelona", fields: [{ label: "Tipo", value: "atico" }, { label: "Habitaciones", value: "2" }] },
+      ],
+    })).toMatchObject({ kind: "resolved", ref: { id: "204" }, reason: "descriptive" });
     expect(resolvePropertyMention({ message: "el inmueble REF-B", messages, candidates })).toMatchObject({ kind: "resolved", ref: { id: "202" }, reason: "reference" });
     expect(resolvePropertyMention({ message: "me refería al de Barcelona", messages, candidates })).toMatchObject({ kind: "ambiguous" });
   });

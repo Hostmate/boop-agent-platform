@@ -17,7 +17,7 @@ export type PropertyGroundingResolution =
 
 const GENERIC_WORDS = new Set([
   "el", "la", "los", "las", "un", "una", "unos", "unas", "de", "del", "en", "con", "por", "para", "que", "y", "o", "a",
-  "piso", "pisos", "casa", "casas", "inmueble", "inmuebles", "propiedad", "propiedades", "apartamento", "apartamentos", "atico", "aticos",
+  "piso", "pisos", "casa", "casas", "inmueble", "inmuebles", "propiedad", "propiedades", "apartamento", "apartamentos",
   "este", "esta", "ese", "esa", "otro", "otra", "anterior", "primero", "primera", "segundo", "segunda", "tercero", "tercera", "cuarto", "cuarta", "quinto", "quinta",
   "vimos", "visto", "antes", "referia", "referia", "cuanto", "costaba", "vale", "valia", "unos", "unas", "aproximadamente", "aprox", "sobre", "unos",
   "busca", "buscar", "encuentra", "encontrar", "muestra", "muestrame", "dame", "lista", "listar", "quiero", "necesito", "tiene", "tienen", "que", "qué",
