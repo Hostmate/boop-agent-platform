@@ -281,7 +281,10 @@ export class PropertySearchPropertiesVerticalSlice {
     }
 
     const currentProperty = selectedProperty(priorMessages);
-    const grounding = resolvePropertyMention({ message, messages: priorMessages, selected: currentProperty });
+    // A fresh UI selection is the authoritative conversational selection for
+    // demonstratives. If the text explicitly asks for a different candidate
+    // ("anterior"/"otro"), the resolver still returns that new grounding.
+    const grounding = resolvePropertyMention({ message, messages: priorMessages, selected: selectedItem?.ref ?? currentProperty });
     if (grounding?.kind === "ambiguous") {
       const result: ExecutionResult<PropertySearchPropertiesOutput | PropertyGetPropertyOutput> = {
         status: "needs_input", summary: grounding.question, entities: grounding.candidates.map((candidate) => candidate.ref),
