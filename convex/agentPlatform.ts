@@ -118,9 +118,10 @@ export const listMessages = query({
     const conversation = await tenantConversation(ctx, actor.tenantId, args.conversationId);
     if (!assertConversationOwner(actor, conversation)) throw new ConvexError("CONVERSATION_NOT_FOUND");
     const limit = Math.max(1, Math.min(200, Math.floor(args.limit)));
-    return await ctx.db.query("agentPlatformMessages")
+    const messages = await ctx.db.query("agentPlatformMessages")
       .withIndex("by_tenant_conversation_sequence", (q) => q.eq("tenantId", actor.tenantId).eq("conversationId", args.conversationId))
-      .order("asc").take(limit);
+      .order("desc").take(limit);
+    return messages.reverse();
   },
 });
 
@@ -133,9 +134,10 @@ export const listMessagesIfPresent = query({
     // conversation. Its empty state must render without weakening ownership.
     if (!assertConversationOwner(actor, conversation)) return [];
     const limit = Math.max(1, Math.min(200, Math.floor(args.limit)));
-    return await ctx.db.query("agentPlatformMessages")
+    const messages = await ctx.db.query("agentPlatformMessages")
       .withIndex("by_tenant_conversation_sequence", (q) => q.eq("tenantId", actor.tenantId).eq("conversationId", args.conversationId))
-      .order("asc").take(limit);
+      .order("desc").take(limit);
+    return messages.reverse();
   },
 });
 
