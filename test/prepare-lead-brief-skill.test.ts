@@ -177,6 +177,10 @@ describe("prepare-lead-brief deterministic execution", () => {
     });
     expect(disabled.result.status).toBe("permission_denied");
     expect(disabledLead.getContext).not.toHaveBeenCalled();
+    expect(disabledRepo.state.attempts.size).toBe(0);
+    expect(disabledRepo.state.events.some((event) => event.type === "execution.permission_denied")).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(disabledRepo.state.messages.at(-1), "blocks")).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(disabledRepo.state.messages.at(-1), "runId")).toBe(true);
 
     const permissionRepo = memoryRepository();
     const permissionLead = leadPort(async () => { throw new Error("PERMISSION_DENIED: lead reassigned"); });

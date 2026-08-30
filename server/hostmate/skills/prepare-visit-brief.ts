@@ -12,6 +12,7 @@ import {
   VISITS_GET_VISIT_TOOL_ID, createGetVisitTool, type GetVisitOutput, type VisitDetailPort,
 } from "../product-tools/visits/get-visit.js";
 import { ProductToolRegistry } from "../tools/registry.js";
+import { applyContextTransition } from "../interaction/context-transition.js";
 import {
   briefFields, executeDeterministicReadSkill, formatDateTime, formatMoney, isAuthorityFailure,
   type DeterministicSkillInput, type DeterministicSkillTurn,
@@ -136,10 +137,16 @@ export class PrepareVisitBriefVerticalSlice {
         };
         return {
           result,
-          contextRefs: {
-            selected: { ...contextRefs.selected, visit: visit.ref, lead: visit.lead?.ref, property: visit.property?.ref },
-            referenced: result.entities,
-          },
+          contextRefs: applyContextTransition({
+            context: contextRefs,
+            selected: visit.ref,
+            relations: {
+              visit: {
+                ...(visit.lead?.ref ? { lead: visit.lead.ref } : {}),
+                ...(visit.property?.ref ? { property: visit.property.ref } : {}),
+              },
+            },
+          }).context,
           completionEvent: { missing: data.missing },
         };
       },

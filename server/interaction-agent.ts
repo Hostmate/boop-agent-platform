@@ -25,7 +25,7 @@ import {
 } from "./images/content-blocks.js";
 import { redactPhoneNumbers } from "./privacy.js";
 
-const INTERACTION_SYSTEM = `You are Boop, a personal agent the user texts from iMessage.
+export const INTERACTION_SYSTEM = `You are Boop, a personal agent the user texts from iMessage.
 
 You are a DISPATCHER, not a doer. Your job:
 1. Understand what the user wants.
@@ -252,6 +252,36 @@ interface HandleOpts {
   mediaError?: string;
 }
 
+export type InteractionPromptMessage = Readonly<{
+  role: string;
+  content: string;
+}>;
+
+/**
+ * Shared prompt construction primitive used by the real Interaction Agent.
+ * Shadow consumers may reuse this without invoking handleUserMessage, which
+ * intentionally owns persistence, Memory extraction, usage and delegation.
+ */
+export function buildInteractionPrompt(input: {
+  history: readonly InteractionPromptMessage[];
+  currentMessage: string;
+  mediaError?: string;
+  proactive?: boolean;
+}): string {
+  const userText = input.mediaError
+    ? `[user sent images but they couldn't be downloaded: ${input.mediaError}]\n${input.currentMessage}`
+    : input.currentMessage;
+  if (input.proactive) {
+    return `Standalone proactive notice. Write a concise user-facing iMessage from this notice only. Do not research, spawn agents, or continue any prior conversation.\n\n${userText}`;
+  }
+  const historyBlock = input.history
+    .map((message) => `${message.role.toUpperCase()}: ${message.content}`)
+    .join("\n");
+  return historyBlock
+    ? `Prior turns:\n${historyBlock}\n\nCurrent message:\n${userText}`
+    : userText;
+}
+
 function randomId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -345,25 +375,16 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
           conversationId: opts.conversationId,
           limit: 10,
         });
-  const historyBlock = history
-    .slice(0, -1)
-    .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
-    .join("\n");
-
   const systemPrompt = INTERACTION_SYSTEM.replace(
     "{{INTEGRATIONS}}",
     integrations.join(", ") || "(no integrations configured yet)",
   );
-
-  const userText = opts.mediaError
-    ? `[user sent images but they couldn't be downloaded: ${opts.mediaError}]\n${opts.content}`
-    : opts.content;
-  const promptText =
-    opts.kind === "proactive"
-      ? `Standalone proactive notice. Write a concise user-facing iMessage from this notice only. Do not research, spawn agents, or continue any prior conversation.\n\n${userText}`
-      : historyBlock
-        ? `Prior turns:\n${historyBlock}\n\nCurrent message:\n${userText}`
-        : userText;
+  const promptText = buildInteractionPrompt({
+    history: opts.kind === "proactive" ? [] : history.slice(0, -1),
+    currentMessage: opts.content,
+    mediaError: opts.mediaError,
+    proactive: opts.kind === "proactive",
+  });
 
   const tag = opts.turnTag ?? turnId.slice(-6);
   const log = (msg: string) => console.log(`[turn ${tag}] ${msg}`);

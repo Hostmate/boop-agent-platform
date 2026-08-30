@@ -7,6 +7,7 @@ import {
   type CrmGetLeadContextOutput, type LeadContextPort,
 } from "../product-tools/crm/get-lead-context.js";
 import { ProductToolRegistry } from "../tools/registry.js";
+import { applyContextTransition } from "../interaction/context-transition.js";
 import {
   briefFields, executeDeterministicReadSkill, formatDateTime, formatMoney,
   type DeterministicSkillInput, type DeterministicSkillTurn,
@@ -118,7 +119,7 @@ export class PrepareLeadBriefVerticalSlice {
         };
         return {
           result,
-          contextRefs: { selected: { ...contextRefs.selected, lead: lead.lead.ref }, referenced: [lead.lead.ref] },
+          contextRefs: applyContextTransition({ context: contextRefs, selected: lead.lead.ref }).context,
           completionEvent: { missing },
         };
       },

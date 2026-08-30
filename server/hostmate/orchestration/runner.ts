@@ -2,7 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import type { ActorContext } from "../contracts/actor-context.js";
 import type { EntityRef } from "../contracts/domain.js";
 import type { ExecutionResult, MultiAgentSummaryBlock } from "../contracts/execution-result.js";
-import type { AgentMessageRecord, ControlPlaneRepository } from "../control-plane/repository.js";
+import type { AgentMessageRecord, ControlPlaneRepository, ConversationContextRefs } from "../control-plane/repository.js";
+import { applyContextTransition } from "../interaction/context-transition.js";
 import {
   createCrmGetLeadContextTool, CRM_GET_LEAD_CONTEXT_TOOL_ID,
   toCrmLeadContextExecutionResult, type CrmGetLeadContextOutput, type LeadContextPort,
@@ -57,6 +58,10 @@ function selectedLead(input: MultiAgentTurnInput): EntityRef | undefined {
     if (lead?.type === "crm.lead") return lead;
   }
   return undefined;
+}
+
+function latestContext(messages: readonly AgentMessageRecord[]): ConversationContextRefs {
+  return [...messages].reverse().find((message) => message.contextRefs)?.contextRefs ?? { selected: {}, referenced: [] };
 }
 
 function handoff(input: AgentHandoff): AgentHandoff {
@@ -146,6 +151,7 @@ export class LeadOpportunityOrchestrationRunner {
     const now = Date.now();
     const interactionRunId = randomUUID();
     const orchestrationId = randomUUID();
+    const canonicalContext = applyContextTransition({ context: latestContext(input.priorMessages), selected: lead }).context;
     const budget: OrchestrationBudget = Object.freeze({
       maxChildRuns: 3, maxToolCalls: 3, maxInferenceCalls: 0, maxInputTokens: 0, maxCostUsd: 0, deadlineAt: now + 45_000,
     });
@@ -159,7 +165,7 @@ export class LeadOpportunityOrchestrationRunner {
     const sequence = input.priorMessages.reduce((max, message) => Math.max(max, message.sequence), 0);
     await repository.appendMessage(actor, {
       messageId: randomUUID(), conversationId: input.conversationId, role: "user", contentRedacted: input.message,
-      contextRefs: { selected: { lead }, referenced: [] }, runId: interactionRunId, sequence: sequence + 1, createdAt: now,
+      contextRefs: canonicalContext, runId: interactionRunId, sequence: sequence + 1, createdAt: now,
     });
     const context: ImmutableOrchestrationContext = Object.freeze({ actor, interactionRunId, orchestrationId, conversationId: input.conversationId, budget });
     const rootHandoff = handoff({
@@ -227,7 +233,13 @@ export class LeadOpportunityOrchestrationRunner {
     await repository.updateRun(actor, interactionRunId, { status, resultSummary: result.summary, completedAt: Date.now() }, "running");
     await repository.appendMessage(actor, {
       messageId: randomUUID(), conversationId: input.conversationId, role: "assistant", contentRedacted: result.summary,
-      blocks: result.blocks, contextRefs: { selected: { lead: crmOutput.lead.ref }, referenced: entities }, runId: interactionRunId,
+      blocks: result.blocks, contextRefs: {
+        ...applyContextTransition({ context: canonicalContext, selected: crmOutput.lead.ref }).context,
+        referenced: [...new Map([
+          ...canonicalContext.referenced,
+          ...entities,
+        ].map((ref) => [`${ref.type}:${ref.id}`, ref])).values()],
+      }, runId: interactionRunId,
       sequence: sequence + 2, createdAt: Date.now(),
     });
     return { conversationId: input.conversationId, interactionRunId, executionRunId: crm.runId, childRunIds: branches.map((branch) => branch.runId), result };

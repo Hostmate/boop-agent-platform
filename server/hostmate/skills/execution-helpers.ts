@@ -6,11 +6,14 @@ import type { ExecutionResult } from "../contracts/execution-result.js";
 import type {
   AgentMessageRecord, ControlPlaneRepository, ConversationContextRefs,
 } from "../control-plane/repository.js";
+import { isMissingConversationError } from "../control-plane/errors.js";
 import { redactEventPayload } from "../events/contracts.js";
 import { ExecutionDispatchResolver } from "../interaction/dispatch.js";
+import { applyContextTransition } from "../interaction/context-transition.js";
 import { DefaultPolicyEngine } from "../policy/engine.js";
 import { ExecutionProfileRegistry } from "../profiles/registry.js";
 import type { ProductToolRegistry } from "../tools/registry.js";
+import { normalizeExpectedExecutionError } from "../drafts/expected-outcomes.js";
 import { SkillRegistry } from "./registry.js";
 
 export type DeterministicSkillInput = Readonly<{
@@ -83,6 +86,16 @@ function hash(value: string): string { return createHash("sha256").update(value)
 function redactedObjective(value: string): string { return value.replace(/\s+/g, " ").trim().slice(0, 160); }
 
 function failure<T>(error: unknown, spec: DeterministicReadSkillSpec<T>): ExecutionResult<T> {
+  const expected = normalizeExpectedExecutionError(error);
+  if (expected) {
+    return {
+      status: expected.status,
+      summary: expected.summary,
+      entities: [],
+      errors: [{ code: expected.code, message: expected.message, retryable: expected.retryable }],
+      suggestedNext: expected.status === "needs_input" ? [expected.summary] : undefined,
+    };
+  }
   const message = error instanceof Error ? error.message : String(error);
   const denied = isAuthorityFailure(error);
   return {
@@ -112,8 +125,10 @@ export async function executeDeterministicReadSkill<T>(
   let prior: readonly AgentMessageRecord[];
   try {
     prior = await repository.listMessages(actor, { conversationId: input.conversationId, limit: 200 });
-  } catch {
-    await repository.createConversation(actor, { conversationId: input.conversationId, title: "AI Chat" });
+  } catch (error) {
+    if (!isMissingConversationError(error)) throw error;
+    try { await repository.createConversation(actor, { conversationId: input.conversationId, title: "AI Chat" }); }
+    catch (createError) { if (!/CONVERSATION_ALREADY_EXISTS/.test(String(createError))) throw createError; }
     prior = [];
   }
   const previousContext = latestContext(prior);
@@ -121,10 +136,9 @@ export async function executeDeterministicReadSkill<T>(
   const selectedRef = spec.acceptsRef(input.selectedEntityRef)
     ? input.selectedEntityRef
     : spec.acceptsRef(previousSelected) ? previousSelected : undefined;
-  const contextRefs: ConversationContextRefs = {
-    selected: { ...previousContext.selected, ...(selectedRef ? { [spec.contextRole]: selectedRef } : {}) },
-    referenced: previousContext.referenced,
-  };
+  const contextRefs: ConversationContextRefs = selectedRef
+    ? applyContextTransition({ context: previousContext, selected: selectedRef }).context
+    : previousContext;
   let sequence = (prior.at(-1)?.sequence ?? 0) + 1;
   await repository.appendMessage(actor, {
     messageId: randomUUID(), conversationId: input.conversationId, role: "user",
@@ -147,11 +161,13 @@ export async function executeDeterministicReadSkill<T>(
   await event("interaction.started", { objectiveClass: spec.objectiveClass, selectedRef });
 
   const persist = async (result: ExecutionResult<T>, refs = contextRefs) => {
-    await repository.appendMessage(actor, {
+    const message = {
       messageId: randomUUID(), conversationId: input.conversationId, role: "assistant",
-      contentRedacted: result.summary, blocks: result.blocks, contextRefs: refs,
-      runId: executionRunId, sequence, createdAt: Date.now(),
-    });
+      contentRedacted: result.summary, contextRefs: refs, sequence, createdAt: Date.now(),
+      ...(result.blocks ? { blocks: result.blocks } : {}),
+      ...(executionRunId ? { runId: executionRunId } : {}),
+    } as const;
+    await repository.appendMessage(actor, message);
   };
 
   if (!selectedRef) {
@@ -190,7 +206,6 @@ export async function executeDeterministicReadSkill<T>(
   }, "running");
 
   executionRunId = randomUUID();
-  attemptId = randomUUID();
   await repository.createRun(actor, {
     runId: executionRunId, conversationId: input.conversationId, kind: "execution",
     profileId: spec.profileId, profileVersion: dispatch.profile.version, parentRunId: interactionRunId,
@@ -212,6 +227,7 @@ export async function executeDeterministicReadSkill<T>(
     return { conversationId: input.conversationId, interactionRunId, executionRunId, result };
   }
 
+  attemptId = randomUUID();
   await repository.createAttempt(actor, { attemptId, runId: executionRunId, attemptNumber: 1, status: "queued", fencingToken: 0 });
   await repository.updateAttempt(actor, { attemptId, expectedStatus: "queued", patch: { status: "running", startedAt: Date.now() } });
   await repository.updateRun(actor, executionRunId, { status: "running" }, "queued");

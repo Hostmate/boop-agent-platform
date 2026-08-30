@@ -21,11 +21,16 @@ function errorText(error: unknown): string {
 export function normalizeExpectedExecutionError(error: unknown): ExpectedExecutionOutcome | undefined {
   const raw = errorText(error);
   const value = raw.toUpperCase();
-  if (/PERMISSION_DENIED|POLICY_DENIED|FORBIDDEN|MISSING_PERMISSION|CAPABILITY_DISABLED|SKILL_DISABLED/.test(value)) {
+  if (/PERMISSION_DENIED|POLICY_DENIED|FORBIDDEN|MISSING_PERMISSION|CAPABILITY_DISABLED|CAPABILITY_UNAVAILABLE|TOOL_UNAVAILABLE|SKILL_DISABLED|SKILL_UNAVAILABLE/.test(value)) {
     return { status: "permission_denied", code: "PERMISSION_DENIED", summary: "Esta acción no está disponible para tu perfil o permisos actuales.", message: "Expected policy denial", retryable: false };
   }
   if (/AMBIGUOUS/.test(value)) {
     return { status: "needs_input", code: "AMBIGUOUS", summary: "Necesito una aclaración antes de preparar esta acción.", message: "Expected ambiguous domain input", retryable: false };
+  }
+  // A stale reference caused by tenant/scope authority is a denial, not an
+  // invitation to retry the same potentially foreign reference.
+  if (/STALE.*(?:TENANT|SCOPE|AUTH|CROSS)|(?:TENANT|SCOPE).*MISMATCH/.test(value)) {
+    return { status: "permission_denied", code: "PERMISSION_DENIED", summary: "Esa referencia ya no está disponible dentro de tu scope actual.", message: "Expected authority denial", retryable: false };
   }
   if (/MISSING_REQUIRED|MISSING_VISIT|MANUAL_TARGET|MULTIPLE_VISITS|MIXED_ACTION|INVALID_INPUT|INVALID_CANDIDATE|UNSUPPORTED|GROUP_VISIT|CHANGE_PROPERTY|CHANGE_AGENT/.test(value)) {
     return { status: "needs_input", code: "MISSING_REQUIRED_FIELD", summary: "Necesito una referencia o una opción compatible antes de preparar esta acción.", message: "Expected unsupported or incomplete domain input", retryable: false };
@@ -48,4 +53,3 @@ export function normalizeExpectedExecutionError(error: unknown): ExpectedExecuti
   }
   return undefined;
 }
-
