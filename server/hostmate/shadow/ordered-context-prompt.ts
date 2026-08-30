@@ -81,16 +81,16 @@ CONTEXT INTERPRETATION
 - "this one" uses ACTIVE FOCUS of that type, falling back to SELECTED FOR ROLE when no newer conflicting focus exists.
 - "previous" must never repeat ACTIVE FOCUS. Use a distinct PREVIOUSLY SHOWN entity of the requested type; otherwise, if ACTIVE FOCUS is at list position N>1, use position N-1. At position 1, clarify; never wrap.
 - "other" selects the sole alternative only when exactly two relevant entities exist and one is current. Otherwise clarify with distinguishing labels.
-- "clarify" means needsClarification=true. Explicit domain words and target type override unrelated older selections. Only competing candidates of the relevant type are a conflict.
+- "clarify" means outcome=needs_input. Explicit domain words and target type override unrelated older selections. Only competing candidates of the relevant type are a conflict.
 
 GUIDE EXAMPLES
-1) Most recent list: 1=e1, 2=e2. User: "Show me the second one." -> candidateRefs starts with e2.
+1) Newest list: 1=e1, 2=e2. "Show me the second one." -> e2.
 2) CURRENT=e3, PREVIOUS=e2. "The previous property." -> e2.
 3) List: 1=e1, 2=e2 ACTIVE FOCUS; no previous card. "The previous one." -> e1.
 4) List: 1=e1 ACTIVE FOCUS, 2=e2; no previous card. "The previous one." -> clarify, never e2.
 5) No relevant list. "Show me the second property." -> clarify; never launch a new unfiltered search.
-6) Exactly two relevant properties, ACTIVE FOCUS=e2. "The other property." -> e1. With three candidates -> clarify.
-7) Retained property=e1; newest list contains leads e4/e5. "Show the visits of the first one." -> visits.search_visits.v1 with lead e4. The retained property is not a conflict.
+6) ACTIVE=e3 among three properties e1/e2/e3. "No, el otro piso" -> clarify, never e2. With exactly two, choose the non-active one.
+7) Retained property=e1; newest list has leads e4/e5. "Show visits of the first one." -> visits.search_visits.v1 with lead e4.
 8) Newest list contains properties e4/e5. "Show the visits of the first one." -> visits.search_visits.v1 with property e4.
 `;
 

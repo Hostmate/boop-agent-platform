@@ -34,12 +34,19 @@ import {
   type HostmateInteractionAction,
 } from "../interaction/capability-catalog.js";
 
-const SHADOW_ACTIONS = [
+const READY_ACTIONS = [
   ...HOSTMATE_INTERACTION_CAPABILITIES,
   ...HOSTMATE_INTERACTION_ORCHESTRATION_TARGETS,
+] as const;
+
+const SHADOW_ACTIONS = [
+  ...READY_ACTIONS,
   "needs_clarification",
   "unsupported",
 ] as const;
+
+const decisionOutcomeSchema = z.enum(["ready", "needs_input", "unsupported"]);
+const missingInputSchema = z.enum(["lead", "property", "datetime", "entity", "request"]);
 
 const semanticCandidateShape = z.object({
   evidenceKey: z.string().trim().min(1),
@@ -52,10 +59,55 @@ const visitDraftShape = z.object({
   temporalPhrase: z.string().trim().min(1).max(160),
 }).strict();
 
-const targetSearchShape = z.object({
-  leadQuery: z.string().trim().min(2).max(120).nullable(),
-  propertyQuery: z.string().trim().min(2).max(120).nullable(),
+const decisionVisitDraftShape = z.object({
+  startDate: z.string().trim().max(10).nullable(),
+  startTime: z.string().trim().max(8).nullable(),
+  temporalPhrase: z.string().trim().max(160),
 }).strict();
+
+const targetSearchShape = z.object({
+  leadQuery: z.string().trim().min(2).max(120)
+    .describe("Named Lead search text. Null only when a Lead candidate already exists or the chosen action does not require a Lead.")
+    .nullable(),
+  propertyQuery: z.string().trim().min(2).max(120)
+    .describe("Named Property search text. Null only when a Property candidate already exists or the chosen action does not require a Property.")
+    .nullable(),
+}).strict();
+
+const decisionTargetSearchShape = z.object({
+  leadQuery: z.string().trim().max(120).nullable(),
+  propertyQuery: z.string().trim().max(120).nullable(),
+}).strict();
+
+function isExactVisitDate(value: unknown): value is string {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function canonicalVisitTime(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  if (/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value)) return value;
+  if (/^(?:[01]\d|2[0-3]):[0-5]\d:00$/.test(value)) return value.slice(0, 5);
+  return null;
+}
+
+function isUsableTargetQuery(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length >= 2;
+}
+
+function hasUsableTargetSearch(value: z.infer<typeof decisionTargetSearchShape> | null): boolean {
+  return isUsableTargetQuery(value?.leadQuery) || isUsableTargetQuery(value?.propertyQuery);
+}
+
+function hasVisitDraftContent(value: z.infer<typeof decisionVisitDraftShape> | null): boolean {
+  if (!value) return false;
+  return !isEmptyWireText(value.startDate)
+    || !isEmptyWireText(value.startTime)
+    || !isEmptyWireText(value.temporalPhrase);
+}
+
+function isEmptyWireText(value: string | null): boolean {
+  return value === null || value === "" || value.toLowerCase() === "null";
+}
 
 /**
  * Minimal semantic decision requested from the Interaction LLM.
@@ -66,15 +118,64 @@ const targetSearchShape = z.object({
  */
 export const conversationDecisionShape = {
   intent: z.string().trim().min(1),
-  action: z.enum(SHADOW_ACTIONS),
+  outcome: decisionOutcomeSchema.describe("The single readiness decision: ready, needs_input, or unsupported."),
+  action: z.enum(READY_ACTIONS)
+    .describe("One available capability only when outcome is ready; otherwise null.")
+    .nullable(),
   candidateRefs: z.array(semanticCandidateShape),
-  needsClarification: z.boolean(),
-  clarificationQuestion: z.string().trim(),
-  targetSearch: targetSearchShape.nullable().default(null),
-  visitDraft: visitDraftShape.nullable().default(null),
+  missingInputs: z.array(missingInputSchema)
+    .max(3)
+    .describe("Required information still missing. Empty only when outcome is ready or unsupported."),
+  clarificationQuestion: z.string().trim().max(500)
+    .describe("One contextual question for needs_input. Empty or null for ready and unsupported.")
+    .nullable(),
+  targetSearch: decisionTargetSearchShape
+    .describe("Search hints for unresolved named targets. Null never means that a required target may be silently omitted.")
+    .nullable(),
+  visitDraft: decisionVisitDraftShape
+    .describe("Exact known Visit date and time. Required for a ready Create Visit; may preserve known time during needs_input and is null when unknown or irrelevant.")
+    .nullable(),
 } satisfies z.ZodRawShape;
 
-export const conversationDecisionSchema = z.object(conversationDecisionShape).strict();
+export const conversationDecisionSchema = z.object(conversationDecisionShape).strict().superRefine((value, context) => {
+  if (value.outcome === "ready") {
+    if (!value.action) context.addIssue({ code: z.ZodIssueCode.custom, path: ["action"], message: "A ready decision requires one action" });
+    if (value.missingInputs.length > 0) context.addIssue({ code: z.ZodIssueCode.custom, path: ["missingInputs"], message: "A ready decision cannot have missing inputs" });
+    if (!isEmptyWireText(value.clarificationQuestion)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["clarificationQuestion"], message: "A ready decision cannot ask a clarification question" });
+  } else if (value.outcome === "needs_input") {
+    if (value.action !== null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["action"], message: "A needs_input decision cannot select an action yet" });
+    if (value.missingInputs.length === 0) context.addIssue({ code: z.ZodIssueCode.custom, path: ["missingInputs"], message: "A needs_input decision must identify what is missing" });
+    if (isEmptyWireText(value.clarificationQuestion)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["clarificationQuestion"], message: "A needs_input decision requires one clarification question" });
+  } else {
+    if (value.action !== null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["action"], message: "An unsupported decision cannot select an action" });
+    if (value.missingInputs.length > 0) context.addIssue({ code: z.ZodIssueCode.custom, path: ["missingInputs"], message: "An unsupported decision does not request missing input" });
+    if (!isEmptyWireText(value.clarificationQuestion)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["clarificationQuestion"], message: "An unsupported decision cannot ask a clarification question" });
+    if (hasUsableTargetSearch(value.targetSearch)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["targetSearch"], message: "An unsupported decision cannot start a target search" });
+    if (hasVisitDraftContent(value.visitDraft)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["visitDraft"], message: "An unsupported decision cannot prepare a Visit Draft" });
+  }
+
+  if (value.outcome !== "ready" || !value.action) return;
+  if (value.action === "visits.create_visit.v1") {
+    const leadCount = value.candidateRefs.filter((candidate) => candidate.type === "crm.lead").length;
+    const propertyCount = value.candidateRefs.filter((candidate) => candidate.type === "property.property").length;
+    if (!value.visitDraft
+      || !isExactVisitDate(value.visitDraft.startDate)
+      || !canonicalVisitTime(value.visitDraft.startTime)
+      || isEmptyWireText(value.visitDraft.temporalPhrase)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["visitDraft"], message: "A ready Create Visit requires an exact date and time" });
+    }
+    if (leadCount > 1 || propertyCount > 1) context.addIssue({ code: z.ZodIssueCode.custom, path: ["candidateRefs"], message: "A ready Create Visit accepts at most one Lead and one Property" });
+    if (leadCount !== 1 && !isUsableTargetQuery(value.targetSearch?.leadQuery)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["targetSearch", "leadQuery"], message: "A ready Create Visit requires one known Lead or a Lead search query" });
+    if (propertyCount !== 1 && !isUsableTargetQuery(value.targetSearch?.propertyQuery)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["targetSearch", "propertyQuery"], message: "A ready Create Visit requires one known Property or a Property search query" });
+    return;
+  }
+  if (hasVisitDraftContent(value.visitDraft)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["visitDraft"], message: "visitDraft is only valid for Create Visit" });
+  if (value.action === "property.search_properties.v1") {
+    if (value.targetSearch?.leadQuery) context.addIssue({ code: z.ZodIssueCode.custom, path: ["targetSearch", "leadQuery"], message: "Property search cannot contain a Lead query" });
+  } else if (hasUsableTargetSearch(value.targetSearch)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["targetSearch"], message: "targetSearch is only valid for Create Visit or Property search" });
+  }
+});
 export type ConversationDecision = z.infer<typeof conversationDecisionSchema>;
 
 export const conversationProposalShape = {
@@ -152,24 +253,44 @@ export const conversationProposalSchema = z.object(conversationProposalShape).st
 export type ConversationProposal = z.infer<typeof conversationProposalSchema>;
 
 export function enrichConversationProposal(decision: ConversationDecision): ConversationProposal {
-  const hasCatalogAction = decision.action !== "needs_clarification" && decision.action !== "unsupported";
-  const action = hasCatalogAction ? decision.action as HostmateInteractionAction : null;
+  const proposalAction = decision.outcome === "ready"
+    ? decision.action as HostmateInteractionAction
+    : decision.outcome === "needs_input" ? "needs_clarification" : "unsupported";
+  const action = decision.outcome === "ready" ? proposalAction as HostmateInteractionAction : null;
   const domain = action ? interactionDefinition(action).domain : "unknown";
   const delegationProposal = action ? expectedDelegationFor(action) : { kind: "none" as const, target: "" as const };
+  const readyTargetSearch = decision.outcome === "ready" && hasUsableTargetSearch(decision.targetSearch)
+    ? {
+        leadQuery: isUsableTargetQuery(decision.targetSearch?.leadQuery) ? decision.targetSearch.leadQuery : null,
+        propertyQuery: isUsableTargetQuery(decision.targetSearch?.propertyQuery) ? decision.targetSearch.propertyQuery : null,
+      }
+    : null;
+  const readyVisitDraft = action === "visits.create_visit.v1"
+    && decision.visitDraft
+    && isExactVisitDate(decision.visitDraft.startDate)
+    && canonicalVisitTime(decision.visitDraft.startTime)
+    ? {
+        startDate: decision.visitDraft.startDate,
+        startTime: canonicalVisitTime(decision.visitDraft.startTime),
+        temporalPhrase: decision.visitDraft.temporalPhrase,
+      }
+    : null;
 
   return conversationProposalSchema.parse({
     intent: decision.intent,
     domain,
-    action: decision.action,
+    action: proposalAction,
     candidateRefs: decision.candidateRefs,
-    needsClarification: decision.needsClarification,
-    clarificationQuestion: decision.clarificationQuestion,
+    needsClarification: decision.outcome === "needs_input",
+    clarificationQuestion: decision.outcome === "needs_input" && !isEmptyWireText(decision.clarificationQuestion)
+      ? decision.clarificationQuestion
+      : "",
     delegationProposal,
     freshRead: action ? "required" : "not_required",
-    visitDraft: decision.action === "visits.create_visit.v1" ? decision.visitDraft : null,
-    visitTargetSearch: decision.action === "visits.create_visit.v1" ? decision.targetSearch : null,
-    propertyTargetSearch: decision.action === "property.search_properties.v1" && decision.targetSearch?.propertyQuery
-      ? { query: decision.targetSearch.propertyQuery }
+    visitDraft: readyVisitDraft,
+    visitTargetSearch: action === "visits.create_visit.v1" ? readyTargetSearch : null,
+    propertyTargetSearch: action === "property.search_properties.v1" && readyTargetSearch?.propertyQuery
+      ? { query: readyTargetSearch.propertyQuery }
       : null,
   });
 }
@@ -258,44 +379,44 @@ export type BoopInteractionShadowResult = Readonly<{
   error?: Readonly<{ code: string; message: string }>;
 }>;
 
-export const BOOP_INTERACTION_SHADOW_CONTRACT_VERSION = 10 as const;
+export const BOOP_INTERACTION_SHADOW_CONTRACT_VERSION = 11 as const;
 
 export const BOOP_INTERACTION_SHADOW_CONTRACT = `
 You are a proposal-only Boop Interaction shadow. Call the inert
-boop-shadow.propose_conversation tool exactly once. Do not execute, simulate,
-confirm or describe Tools, Skills, Writes, Drafts, Memory or child agents.
+boop-shadow.propose_conversation tool once. Never execute, simulate or confirm
+Tools, Skills, Writes, Drafts, Memory or child agents.
 
-candidateRefs may only use supplied evidenceKey values. They are evidence, not
-authority: never invent IDs, tenant, permissions, ToolScope or confirmation.
+candidateRefs use only supplied evidenceKey values. They are evidence, never
+authority: do not invent IDs, tenant, permissions, ToolScope or confirmation.
 When evidence is insufficient or conflicting, clarify instead of guessing.
 ${ORDERED_CONTEXT_INTERPRETATION_GUIDE}
 
 OUTPUT CONTRACT
 - Preserve the current user's language in intent and clarificationQuestion. If the message is Spanish, write them in Spanish; never English.
-- action is one available capability/orchestration target, needs_clarification or unsupported.
+- outcome is the single readiness switch: ready has one action and no missing input; needs_input has action=null, names what is missing and asks one contextual question; unsupported has action=null and no missing input.
+- For ready or unsupported, clarificationQuestion is null or ""; never write the text "null".
+- needs_input may preserve known fields; unknowns are null and never invented. Time is HH:mm; HH:mm:00 is accepted only with zero seconds.
 - A task read is unsupported because no task-read action exists; tasks.create_task.v1 only prepares a new task.
 - Return only semantic choices. Hostmate derives domain, delegation and fresh-read policy from action; do not output those catalog fields.
 - A direct single-entity read uses exactly one item: the primary entity.
-- targetSearch is the single optional block for unresolved named targets. It has leadQuery and propertyQuery; use null for either target already present in candidateRefs.
-- visitDraft exists only for visits.create_visit.v1. Require exact Europe/Madrid date+time; never infer a missing hour. A named person is the Lead, while the commercial is the authenticated actor.
+- targetSearch carries unresolved named targets. Null means that role is known in candidateRefs or irrelevant; it never hides a missing required target.
+- A ready Create Visit requires one Lead candidate/search, one Property candidate/search and exact Europe/Madrid date+time. If any is absent, use needs_input; never infer it. A named person is the Lead, not the authenticated commercial.
 - Property discovery ("busca pisos con terraza") uses property.search_properties.v1 with targetSearch=null. Concrete identification without evidence ("cuánto cuesta el piso de Bonavista") uses the same action plus targetSearch={leadQuery:null,propertyQuery:"Bonavista"}.
 - A Property already present in evidence uses property.get_property.v1 with its candidate. For ordinals, never launch a new search to manufacture context.
-- A descriptive Property clue selects known evidence only when exactly one candidate matches. If several share it, clarify. Candidate order applies only to explicit ordinals; active focus only to "este"/"ese".
+- A descriptive Property clue selects known evidence only when exactly one candidate matches. If several share it, clarify. Order applies only to ordinals; active focus only to "este"/"ese".
 - "otro" never means "anterior": select only when exactly one alternative of the required type exists. With two or more alternatives, clarify; never repeat the active property.
-- If needsClarification=true, action=needs_clarification and ask the smallest discriminating question. The latest result governs pronouns; never fall back past an explicit no-result.
+- In needs_input, ask the smallest question and restate known Lead, Property and time. Never fall back past an explicit no-result.
 
 GUIDE EXAMPLES
 1. Selected lead + "Prepare this lead" -> skill.prepare-lead-brief.v1.
 2. Lead + coordinated lead/visits/properties analysis -> multi-agent.lead-opportunity-analysis.v1.
-3. No relevant list + "Enséñame el segundo inmueble" -> needs_clarification; never run an unfiltered search.
-4. Three known Properties A/B/C with C active + "No, el otro piso" -> needs_clarification because two alternatives remain. Select only when there is exactly one alternative.
-5. Older selected Property A + latest result "No he encontrado ningún inmueble en Girona" + "¿Y ese piso?" -> needs_clarification; never fall back to A.
-6. "¿Qué tareas pendientes tengo?" -> action=unsupported.
-7. Known Lead+Property + "Agenda una visita mañana a las 17:00" -> visits.create_visit.v1 with both candidates and exact visitDraft.
-8. No known targets + "Agenda una visita mañana a las 10:00 para el piso en calle de Loreto con Roger Closas" -> one targetSearch with both queries; Roger Closas is the lead.
-9. "Agenda una visita mañana por la tarde" -> needs_clarification.
-10. No Property evidence + "¿Cuánto costaba el piso de Bonavista?" -> property.search_properties.v1 with targetSearch={leadQuery:null,propertyQuery:"Bonavista"}.
-11. Two known Comte d'Urgell Properties + "el piso de Comte d'Urgell" -> needs_clarification; never pick the first.
+3. No relevant list + "Enséñame el segundo inmueble" -> outcome=needs_input, action=null, missingInputs=["entity"]; never run an unfiltered search.
+4. "¿Qué tareas pendientes tengo?" -> outcome=unsupported, action=null.
+5. Known Lead+Property + "Agenda una visita mañana a las 17:00" -> ready Create Visit with both candidates and exact visitDraft.
+6. "Agenda una visita mañana a las 10:00 para el piso de Loreto con Cliente Ejemplo" -> ready Create Visit; targetSearch has both queries and Cliente Ejemplo is the Lead.
+7. Missing exact hour, Property or Lead -> needs_input, action=null, missingInputs=["datetime"], ["property"] or ["lead"]; restate known details.
+8. No Property evidence + "¿Cuánto costaba el piso de Bonavista?" -> ready Property search with propertyQuery="Bonavista".
+9. After "Busca el de Girona" + "No he encontrado ningún inmueble", "¿Y ese piso?" -> needs_input; never reuse an older selected Property.
 `;
 
 const OPAQUE_EVIDENCE_KEY = /^e[1-9][0-9]*$/;

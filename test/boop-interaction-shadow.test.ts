@@ -22,6 +22,20 @@ function sse(events: unknown[]): Response {
   );
 }
 
+function readyWire(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    intent: "consultar contexto",
+    outcome: "ready",
+    action: "crm.get_lead_context.v1",
+    candidateRefs: [],
+    missingInputs: [],
+    clarificationQuestion: "",
+    targetSearch: null,
+    visitDraft: null,
+    ...overrides,
+  };
+}
+
 const evidence: ShadowEvidence = {
   currentSelection: {
     lead: { evidenceKey: "e1", type: "crm.lead", label: "Lead A", source: "selected" },
@@ -43,11 +57,11 @@ const evidence: ShadowEvidence = {
 describe("Boop Interaction Pareto shadow", () => {
   it("keeps unavailable task reads explicit in the proposal contract", () => {
     expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("no task-read action exists");
-    expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain('"¿Qué tareas pendientes tengo?" -> action=unsupported');
+    expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain('"¿Qué tareas pendientes tengo?" -> outcome=unsupported');
   });
 
   it("keeps the proposal contract compact, canonical and example-guided", () => {
-    expect(BOOP_INTERACTION_SHADOW_CONTRACT_VERSION).toBe(10);
+    expect(BOOP_INTERACTION_SHADOW_CONTRACT_VERSION).toBe(11);
     expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("GUIDE EXAMPLES");
     expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("never repeat the active property");
     expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("If several share it, clarify");
@@ -56,7 +70,10 @@ describe("Boop Interaction Pareto shadow", () => {
     expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("multi-agent.lead-opportunity-analysis.v1");
     expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("Hostmate derives domain, delegation and fresh-read policy");
     expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("exactly one item: the primary entity");
-    expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("Roger Closas is the lead");
+    expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("Cliente Ejemplo is the Lead");
+    expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("outcome is the single readiness switch");
+    expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("never reuse an older selected Property");
+    expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain('["property"]');
     expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("targetSearch");
     expect(BOOP_INTERACTION_SHADOW_CONTRACT).not.toContain("visitTargetSearch");
     expect(BOOP_INTERACTION_SHADOW_CONTRACT).not.toContain("propertyTargetSearch");
@@ -66,10 +83,13 @@ describe("Boop Interaction Pareto shadow", () => {
   it("keeps the LLM decision minimal and derives canonical catalog metadata", () => {
     const decision = conversationDecisionSchema.parse({
       intent: "Get current lead context",
+      outcome: "ready",
       action: "crm.get_lead_context.v1",
       candidateRefs: [{ evidenceKey: "e1", type: "crm.lead" }],
-      needsClarification: false,
+      missingInputs: [],
       clarificationQuestion: "",
+      targetSearch: null,
+      visitDraft: null,
     });
     expect(enrichConversationProposal(decision)).toMatchObject({
       domain: "crm",
@@ -79,43 +99,99 @@ describe("Boop Interaction Pareto shadow", () => {
     });
     expect(conversationDecisionSchema.safeParse({
       intent: "Get current lead context",
+      outcome: "ready",
       action: "get_lead_context",
       candidateRefs: [{ evidenceKey: "e1", type: "crm.lead" }],
-      needsClarification: false,
+      missingInputs: [],
       clarificationQuestion: "",
+      targetSearch: null,
+      visitDraft: null,
     }).success).toBe(false);
     expect(conversationDecisionSchema.safeParse({ ...decision, domain: "crm" }).success).toBe(false);
+  });
+
+  it("canonicalizes a provider-emitted empty target-search object", () => {
+    const decision = conversationDecisionSchema.parse(readyWire({
+      action: "property.get_property.v1",
+      candidateRefs: [{ evidenceKey: "e1", type: "property.property" }],
+      targetSearch: { leadQuery: null, propertyQuery: null },
+      visitDraft: { startDate: null, startTime: null, temporalPhrase: "" },
+    }));
+
+    expect(enrichConversationProposal(decision)).toMatchObject({
+      action: "property.get_property.v1",
+      propertyTargetSearch: null,
+      visitTargetSearch: null,
+    });
+    expect(conversationDecisionSchema.safeParse(readyWire({
+      action: "property.get_property.v1",
+      visitDraft: { startDate: "2026-09-01", startTime: "10:00", temporalPhrase: "mañana a las 10:00" },
+    })).success).toBe(false);
   });
 
   it("maps one target-search block to the existing downstream proposal", () => {
     const createVisit = enrichConversationProposal(conversationDecisionSchema.parse({
       intent: "crear visita",
+      outcome: "ready",
       action: "visits.create_visit.v1",
       candidateRefs: [],
-      needsClarification: false,
+      missingInputs: [],
       clarificationQuestion: "",
-      targetSearch: { leadQuery: "Roger Closas", propertyQuery: "calle de Loreto" },
+      targetSearch: { leadQuery: "Cliente Ejemplo", propertyQuery: "calle de Loreto" },
       visitDraft: { startDate: "2026-09-01", startTime: "10:00", temporalPhrase: "mañana a las 10:00" },
     }));
     expect(createVisit).toMatchObject({
       domain: "visits",
-      visitTargetSearch: { leadQuery: "Roger Closas", propertyQuery: "calle de Loreto" },
+      visitTargetSearch: { leadQuery: "Cliente Ejemplo", propertyQuery: "calle de Loreto" },
       propertyTargetSearch: null,
     });
 
     const propertySearch = enrichConversationProposal(conversationDecisionSchema.parse({
       intent: "consultar Bonavista",
+      outcome: "ready",
       action: "property.search_properties.v1",
       candidateRefs: [],
-      needsClarification: false,
+      missingInputs: [],
       clarificationQuestion: "",
       targetSearch: { leadQuery: null, propertyQuery: "Bonavista" },
+      visitDraft: null,
     }));
     expect(propertySearch).toMatchObject({
       domain: "property",
       visitTargetSearch: null,
       propertyTargetSearch: { query: "Bonavista" },
     });
+  });
+
+  it("uses one explicit needs_input outcome and rejects an incomplete ready Visit", () => {
+    const clarification = conversationDecisionSchema.parse({
+      intent: "agendar visita",
+      outcome: "needs_input",
+      action: null,
+      candidateRefs: [],
+      missingInputs: ["property"],
+      clarificationQuestion: "¿En qué inmueble quieres agendar la visita mañana a las 10:00?",
+      targetSearch: { leadQuery: "Cliente Ejemplo", propertyQuery: null },
+      visitDraft: { startDate: "2026-09-01", startTime: "10:00", temporalPhrase: "mañana a las 10:00" },
+    });
+    expect(enrichConversationProposal(clarification)).toMatchObject({
+      action: "needs_clarification",
+      needsClarification: true,
+    });
+    expect(conversationDecisionSchema.safeParse(readyWire({
+      intent: "agendar visita",
+      action: "visits.create_visit.v1",
+      targetSearch: { leadQuery: "Cliente Ejemplo", propertyQuery: null },
+      visitDraft: { startDate: "2026-09-01", startTime: "10:00", temporalPhrase: "mañana a las 10:00" },
+    })).success).toBe(false);
+    expect(enrichConversationProposal(conversationDecisionSchema.parse(readyWire({
+      clarificationQuestion: "null",
+    })))).toMatchObject({ clarificationQuestion: "", needsClarification: false });
+    expect(enrichConversationProposal(conversationDecisionSchema.parse(readyWire({
+      action: "visits.create_visit.v1",
+      targetSearch: { leadQuery: "Cliente Ejemplo", propertyQuery: "Piso Demo" },
+      visitDraft: { startDate: "2026-09-01", startTime: "10:00:00", temporalPhrase: "mañana a las 10:00" },
+    })))).toMatchObject({ visitDraft: { startTime: "10:00" } });
   });
 
   it("keeps the upstream history prompt shape reusable", () => {
@@ -142,13 +218,10 @@ describe("Boop Interaction Pareto shadow", () => {
                 type: "function",
                 function: {
                   name: "boop-shadow__propose_conversation_0",
-                  arguments: JSON.stringify({
+                  arguments: JSON.stringify(readyWire({
                     intent: "lead.get_context",
-                    action: "crm.get_lead_context.v1",
                     candidateRefs: [{ evidenceKey: "e1", type: "crm.lead" }],
-                    needsClarification: false,
-                    clarificationQuestion: "",
-                  }),
+                  })),
                 },
               }],
             },
@@ -190,7 +263,8 @@ describe("Boop Interaction Pareto shadow", () => {
       "candidateRefs",
       "clarificationQuestion",
       "intent",
-      "needsClarification",
+      "missingInputs",
+      "outcome",
       "targetSearch",
       "visitDraft",
     ]);
@@ -214,13 +288,10 @@ describe("Boop Interaction Pareto shadow", () => {
               type: "function",
               function: {
                 name: "boop-shadow__propose_conversation_0",
-                arguments: JSON.stringify({
+                arguments: JSON.stringify(readyWire({
                   intent: "lead.get_context",
-                  action: "crm.get_lead_context.v1",
                   candidateRefs: [{ evidenceKey: "ref:invented", type: "crm.lead" }],
-                  needsClarification: false,
-                  clarificationQuestion: "",
-                }),
+                })),
               },
             }],
           },
@@ -256,7 +327,7 @@ describe("Boop Interaction Pareto shadow", () => {
           finish_reason: "tool_calls",
           delta: { tool_calls: [{ index: 0, id: "call-3", type: "function", function: {
             name: "boop-shadow__propose_conversation_0",
-            arguments: JSON.stringify({ intent: "lead.get_context", action: "crm.get_lead_context.v1", candidateRefs: [{ evidenceKey: "selected", type: "crm.lead" }], needsClarification: false, clarificationQuestion: "" }),
+            arguments: JSON.stringify(readyWire({ intent: "lead.get_context", candidateRefs: [{ evidenceKey: "selected", type: "crm.lead" }] })),
           } }] },
         }],
         usage: {},
@@ -283,7 +354,7 @@ describe("Boop Interaction Pareto shadow", () => {
           finish_reason: "tool_calls",
           delta: { tool_calls: [{ index: 0, id: "call-4", type: "function", function: {
             name: "boop-shadow__propose_conversation_0",
-            arguments: JSON.stringify({ intent: "lead.get_context", action: "crm.get_lead_context.v1", candidateRefs: [{ evidenceKey: "e1", type: "crm.lead" }], needsClarification: false, clarificationQuestion: "" }),
+            arguments: JSON.stringify(readyWire({ intent: "lead.get_context", candidateRefs: [{ evidenceKey: "e1", type: "crm.lead" }] })),
           } }] },
         }],
         usage: {},
@@ -318,7 +389,7 @@ describe("Boop Interaction Pareto shadow", () => {
         model: "deepseek/deepseek-v4-flash-0731",
         choices: [{ finish_reason: "tool_calls", delta: { tool_calls: [{ index: 0, id: "call-5", type: "function", function: {
           name: "boop-shadow__propose_conversation_0",
-          arguments: JSON.stringify({ intent: "lead.get_context", action: "crm.get_lead_context.v1", candidateRefs: [{ evidenceKey: "e1", type: "crm.lead" }], needsClarification: false, clarificationQuestion: "" }),
+          arguments: JSON.stringify(readyWire({ intent: "lead.get_context", candidateRefs: [{ evidenceKey: "e1", type: "crm.lead" }] })),
         } }] } }],
         usage: {},
       }]);

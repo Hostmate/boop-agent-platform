@@ -76,7 +76,7 @@ describe("Interaction Lab composite execution", () => {
   it("resolves named Visit targets with existing tenant-scoped searches before preparing the Draft", async () => {
     const lab = connection() as any;
     lab.searchLeads = vi.fn(async () => ({
-      items: [{ id: "41", client_name: "Roger Closas" }], total: 1, page: 1, limit: 6,
+      items: [{ id: "41", client_name: "Cliente Ejemplo" }], total: 1, page: 1, limit: 6,
       telemetry: { service: "lead.service.list", latencyMs: 2 },
     }));
     const loreto = {
@@ -105,7 +105,7 @@ describe("Interaction Lab composite execution", () => {
     };
     const result = await lab.prepareVisitDraft({
       conversationId: "visit-search-targets",
-      message: "Agenda una visita mañana a las 10:00 para el piso en calle de Loreto con Roger Closas",
+      message: "Agenda una visita mañana a las 10:00 para el piso en calle de Loreto con Cliente Ejemplo",
       openRouterApiKey: "test",
       model: "test",
       reasoningEffort: "none",
@@ -114,15 +114,15 @@ describe("Interaction Lab composite execution", () => {
         intent: "agendar visita", domain: "visits", action: "visits.create_visit.v1", candidateRefs: [],
         needsClarification: false, clarificationQuestion: "", delegationProposal: { kind: "none", target: "" }, freshRead: "required",
         visitDraft: { startDate: "2026-08-31", startTime: "10:00", temporalPhrase: "mañana a las 10:00" },
-        visitTargetSearch: { leadQuery: "Roger Closas", propertyQuery: "calle de Loreto" },
+        visitTargetSearch: { leadQuery: "Cliente Ejemplo", propertyQuery: "calle de Loreto" },
       },
     });
 
-    expect(lab.searchLeads).toHaveBeenCalledWith({ query: "Roger Closas", page: 1, limit: 6 });
+    expect(lab.searchLeads).toHaveBeenCalledWith({ query: "Cliente Ejemplo", page: 1, limit: 6 });
     expect(lab.searchConcretePropertyCandidates).toHaveBeenCalledWith("calle de Loreto");
     expect(lab.resolveConcretePropertyCandidate).toHaveBeenCalledWith(expect.objectContaining({
       query: "calle de Loreto",
-      currentMessage: "Agenda una visita mañana a las 10:00 para el piso en calle de Loreto con Roger Closas",
+      currentMessage: "Agenda una visita mañana a las 10:00 para el piso en calle de Loreto con Cliente Ejemplo",
     }));
     expect(lab.post).toHaveBeenCalledWith("/api/v2/ai-interaction/visit-drafts", expect.objectContaining({
       leadId: "41", propertyId: "865", startDate: "2026-08-31", startTime: "10:00",
@@ -137,25 +137,29 @@ describe("Interaction Lab composite execution", () => {
   it("asks instead of guessing when a named Visit target is ambiguous", async () => {
     const lab = connection() as any;
     lab.searchLeads = vi.fn(async () => ({
-      items: [{ id: "41", client_name: "Roger Closas" }, { id: "42", client_name: "Roger Closas" }],
+      items: [{ id: "41", client_name: "Cliente Ejemplo" }, { id: "42", client_name: "Cliente Ejemplo" }],
       total: 2, page: 1, limit: 6, telemetry: { service: "lead.service.list", latencyMs: 2 },
     }));
     lab.searchConcretePropertyCandidates = vi.fn();
     lab.post = vi.fn();
     const result = await lab.prepareVisitDraft({
       conversationId: "visit-ambiguous-lead", model: "test", reasoningEffort: "none",
-      message: "Agenda una visita mañana a las 10:00 para el piso en calle de Loreto con Roger Closas",
+      message: "Agenda una visita mañana a las 10:00 para el piso en calle de Loreto con Cliente Ejemplo",
       openRouterApiKey: "test",
       evidence: { currentSelection: {}, referencedEntities: [], recentResultEvidence: [], conversationHistory: [], emittedEntityRefs: [], candidateRefs: [], captureStatus: { referenced: "captured", blocks: "captured", prompt: "captured" }, entityIndex: {} },
       proposal: {
         intent: "agendar visita", domain: "visits", action: "visits.create_visit.v1", candidateRefs: [],
         needsClarification: false, clarificationQuestion: "", delegationProposal: { kind: "none", target: "" }, freshRead: "required",
         visitDraft: { startDate: "2026-08-31", startTime: "10:00", temporalPhrase: "mañana a las 10:00" },
-        visitTargetSearch: { leadQuery: "Roger Closas", propertyQuery: "calle de Loreto" },
+        visitTargetSearch: { leadQuery: "Cliente Ejemplo", propertyQuery: "calle de Loreto" },
       },
     });
 
-    expect(result).toMatchObject({ status: "needs_input", entities: [{ id: "41" }, { id: "42" }] });
+    expect(result).toMatchObject({
+      status: "needs_input",
+      summary: expect.stringContaining("Cliente: Cliente Ejemplo · Inmueble: calle de Loreto · Horario: mañana a las 10:00"),
+      entities: [{ id: "41" }, { id: "42" }],
+    });
     expect(lab.searchConcretePropertyCandidates).not.toHaveBeenCalled();
     expect(lab.post).not.toHaveBeenCalled();
   });
@@ -163,7 +167,7 @@ describe("Interaction Lab composite execution", () => {
   it("uses the model's discriminating clarification when concrete Property candidates remain ambiguous", async () => {
     const lab = connection() as any;
     lab.searchLeads = vi.fn(async () => ({
-      items: [{ id: "41", client_name: "Roger Closas" }], total: 1, page: 1, limit: 6,
+      items: [{ id: "41", client_name: "Cliente Ejemplo" }], total: 1, page: 1, limit: 6,
       telemetry: { service: "lead.service.list", latencyMs: 2 },
     }));
     const candidates = [
@@ -179,21 +183,21 @@ describe("Interaction Lab composite execution", () => {
 
     const result = await lab.prepareVisitDraft({
       conversationId: "visit-ambiguous-property",
-      message: "Agenda una visita mañana a las 10:00 para el piso de Bonavista con Roger Closas",
+      message: "Agenda una visita mañana a las 10:00 para el piso de Bonavista con Cliente Ejemplo",
       openRouterApiKey: "test", model: "test", reasoningEffort: "none",
       evidence: { currentSelection: {}, referencedEntities: [], recentResultEvidence: [], conversationHistory: [], emittedEntityRefs: [], candidateRefs: [], captureStatus: { referenced: "captured", blocks: "captured", prompt: "captured" }, entityIndex: {} },
       proposal: {
         intent: "agendar visita", domain: "visits", action: "visits.create_visit.v1", candidateRefs: [],
         needsClarification: false, clarificationQuestion: "", delegationProposal: { kind: "none", target: "" }, freshRead: "required",
         visitDraft: { startDate: "2026-08-31", startTime: "10:00", temporalPhrase: "mañana a las 10:00" },
-        visitTargetSearch: { leadQuery: "Roger Closas", propertyQuery: "Bonavista" },
+        visitTargetSearch: { leadQuery: "Cliente Ejemplo", propertyQuery: "Bonavista" },
       },
     });
 
     expect(result).toMatchObject({
       status: "needs_input",
-      summary: "¿Te refieres al de 3 habitaciones o al de 4?",
-      entities: [{ id: "865" }, { id: "866" }],
+      summary: expect.stringContaining("Cliente: Cliente Ejemplo · Inmueble: Bonavista · Horario: mañana a las 10:00"),
+      entities: [{ id: "41" }, { id: "865" }, { id: "866" }],
       toolCalls: 2,
       runCount: 1,
     });

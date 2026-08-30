@@ -165,6 +165,40 @@ describe("Interaction → Execution hybrid brief", () => {
     });
   });
 
+  it("keeps the resolved Lead and ordered Property candidates during a Visit clarification", () => {
+    const store = new InteractionLabConversationStore();
+    const conversationId = "conversation-pending-visit";
+    store.getOrHydrate({ conversationId, scope, history: [] });
+    const lead = { type: "crm.lead", id: "lead-demo", label: "Cliente Ejemplo" } as const;
+    const properties = [
+      { type: "property.property", id: "property-a", label: "Bonavista A" },
+      { type: "property.property", id: "property-b", label: "Bonavista B" },
+    ] as const;
+    store.appendUser(conversationId, "Agenda una visita mañana a las 10:00 en Bonavista con Cliente Ejemplo");
+    store.appendAssistant({
+      conversationId,
+      content: "Solicitud pendiente de visita — Cliente: Cliente Ejemplo · Inmueble: Bonavista · Horario: mañana a las 10:00. ¿Cuál de los dos inmuebles?",
+      entities: [lead, ...properties],
+      blocks: [{
+        type: "entity_list",
+        title: "2 inmuebles candidatos",
+        items: properties.map((ref) => ({ ref, title: ref.label, fields: [] })),
+      }],
+    });
+
+    const evidence = buildCanonicalConversationEvidence({
+      actor: scope,
+      conversationId,
+      messages: store.messages(conversationId),
+    });
+
+    expect(evidence.currentSelection).toMatchObject({ lead: { type: "crm.lead", label: "Cliente Ejemplo" } });
+    expect(evidence.currentSelection).not.toHaveProperty("property");
+    expect(evidence.orderedContext.recentResultSets[0]?.items.map((item) => item.label))
+      .toEqual(["Bonavista A", "Bonavista B"]);
+    expect(evidence.conversationHistory.at(-1)?.content).toContain("Horario: mañana a las 10:00");
+  });
+
   it("fails closed if a conversation id is reused across actor scope", () => {
     const store = new InteractionLabConversationStore();
     store.getOrHydrate({ conversationId: "conversation-3", scope, history: [] });

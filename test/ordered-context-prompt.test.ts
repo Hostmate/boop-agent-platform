@@ -34,8 +34,9 @@ describe("ordered LLM context presentation", () => {
 
   it("keeps the guide small and teaches criteria rather than backend decisions", () => {
     expect(ORDERED_CONTEXT_INTERPRETATION_GUIDE).toContain("Interpret the language yourself");
-    expect(ORDERED_CONTEXT_INTERPRETATION_GUIDE).toContain("needsClarification=true");
+    expect(ORDERED_CONTEXT_INTERPRETATION_GUIDE).toContain("outcome=needs_input");
     expect(ORDERED_CONTEXT_INTERPRETATION_GUIDE).toContain("exactly two relevant entities");
+    expect(ORDERED_CONTEXT_INTERPRETATION_GUIDE).toContain('"No, el otro piso" -> clarify');
     expect(ORDERED_CONTEXT_INTERPRETATION_GUIDE).toContain("use position N-1");
     expect(ORDERED_CONTEXT_INTERPRETATION_GUIDE).toContain("never start an unfiltered search");
     expect(ORDERED_CONTEXT_INTERPRETATION_GUIDE).toContain("Evidence keys are opaque labels, not a relevance ranking");

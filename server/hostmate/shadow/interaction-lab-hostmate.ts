@@ -158,6 +158,25 @@ export type InteractionLabReadResult = Readonly<{
   writeDraft?: Readonly<{ signedIntent: unknown; confirmationToken: string }>;
 }>;
 
+function visitContinuationSummary(input: Readonly<{
+  proposal: ConversationProposal;
+  question: string;
+  lead?: EntityRef | null;
+  property?: EntityRef | null;
+}>): string {
+  const lead = input.lead?.label ?? input.proposal.visitTargetSearch?.leadQuery;
+  const property = input.property?.label ?? input.proposal.visitTargetSearch?.propertyQuery;
+  const temporal = input.proposal.visitDraft?.temporalPhrase;
+  const known = [
+    lead ? `Cliente: ${lead}` : null,
+    property ? `Inmueble: ${property}` : null,
+    temporal ? `Horario: ${temporal}` : null,
+  ].filter((value): value is string => Boolean(value));
+  return known.length > 0
+    ? `Solicitud pendiente de visita — ${known.join(" · ")}. ${input.question}`
+    : input.question;
+}
+
 type InteractionLabReadTool =
   | ReturnType<typeof createCrmSearchLeadsTool>
   | ReturnType<typeof createPropertySearchPropertiesTool>
@@ -443,12 +462,14 @@ export class InteractionLabHostmateConnection {
         const candidates = result.items.map((item) => ({
           type: "crm.lead", id: String(item.id), label: item.client_name?.trim() || `Lead ${String(item.id)}`,
         }));
+        const question = result.total === 0
+          ? `No he encontrado ningún lead que coincida con “${query}”. ¿Puedes indicar su nombre, teléfono o email?`
+          : `He encontrado ${result.total} leads que coinciden con “${query}”. ¿Con cuál quieres agendar la visita?`;
         return {
           action: "visits.create_visit.v1", executionKind: "write",
-          summary: result.total === 0
-            ? `No he encontrado ningún lead que coincida con “${query}”. ¿Puedes indicar su nombre, teléfono o email?`
-            : `He encontrado ${result.total} leads que coinciden con “${query}”. ¿Con cuál quieres agendar la visita?`,
-          entities: candidates, status: "needs_input", effectiveInput: { leadQuery: query },
+          summary: visitContinuationSummary({ proposal: input.proposal, question, property }),
+          entities: property ? [...candidates, property] : candidates,
+          status: "needs_input", effectiveInput: { leadQuery: query },
           toolCalls: groundingTelemetry.toolCalls, runCount: groundingTelemetry.runCount,
           telemetry: {
             model: groundingTelemetry.model, latencyMs: groundingTelemetry.latencyMs,
@@ -469,10 +490,11 @@ export class InteractionLabHostmateConnection {
       groundingTelemetry.latencyMs += search.latencyMs;
       groundingTelemetry.toolCalls += 1;
       if (search.items.length === 0) {
+        const question = `No he encontrado ningún inmueble que encaje con “${query}”. ¿Puedes darme otra pista, como la zona, la dirección o la referencia?`;
         return {
           action: "visits.create_visit.v1", executionKind: "write",
-          summary: `No he encontrado ningún inmueble que encaje con “${query}”. ¿Puedes darme otra pista, como la zona, la dirección o la referencia?`,
-          entities: [], status: "needs_input", effectiveInput: { propertyQuery: query },
+          summary: visitContinuationSummary({ proposal: input.proposal, question, lead }),
+          entities: [lead], status: "needs_input", effectiveInput: { propertyQuery: query },
           toolCalls: groundingTelemetry.toolCalls, runCount: groundingTelemetry.runCount,
           telemetry: {
             model: groundingTelemetry.model, latencyMs: groundingTelemetry.latencyMs,
@@ -503,8 +525,8 @@ export class InteractionLabHostmateConnection {
       if (resolution.outcome === "needs_input") {
         return {
           action: "visits.create_visit.v1", executionKind: "write",
-          summary: resolution.question,
-          entities: candidates, blocks: [tenantPropertyCandidatesBlock(search.items)],
+          summary: visitContinuationSummary({ proposal: input.proposal, question: resolution.question, lead }),
+          entities: [lead, ...candidates], blocks: [tenantPropertyCandidatesBlock(search.items)],
           status: "needs_input", effectiveInput: { propertyQuery: query },
           toolCalls: groundingTelemetry.toolCalls, runCount: groundingTelemetry.runCount,
           telemetry: {
