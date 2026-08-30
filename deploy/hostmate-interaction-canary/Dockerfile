@@ -12,4 +12,5 @@ ENV NODE_ENV=production
 COPY --from=builder /src/dist-interaction-canary/start.mjs ./start.mjs
 USER node
 EXPOSE 4311
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 CMD ["node", "-e", "fetch('http://127.0.0.1:4311/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
 CMD ["node", "start.mjs"]
