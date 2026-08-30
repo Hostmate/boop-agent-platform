@@ -229,6 +229,8 @@ const groundingCandidates: readonly TenantPropertyCandidate[] = [
   { id: "866", reference: "BONA-4", title: "Bonavista 4 habitaciones", address: "Carrer Bonavista 8", neighborhood: "Gràcia", city: "Barcelona", price: 520000, rooms: 4, bathrooms: 2, areaBuilt: 115, propertySubtype: "piso", character: null, descriptionExcerpt: "Amplio" },
   { id: "867", reference: "MAN-TER", title: "Piso en Manresa con terraza", address: "Carrer Nou 3", neighborhood: "Centre", city: "Manresa", price: 390000, rooms: 3, bathrooms: 2, areaBuilt: 95, propertySubtype: "piso", character: { has_terrace: true }, descriptionExcerpt: "Terraza soleada" },
   { id: "868", reference: "LORETO", title: "Piso en calle de Loreto", address: "Calle de Loreto 10", neighborhood: "Les Corts", city: "Barcelona", price: 400000, rooms: 3, bathrooms: 2, areaBuilt: 90, propertySubtype: "piso", character: null, descriptionExcerpt: null },
+  { id: "869", reference: "URGELL-SALE", title: "Piso en Calle del Comte d'Urgell", address: "Calle del Comte d'Urgell", neighborhood: "L'Antiga Esquerra de l'Eixample", city: "Barcelona", price: 585000, rooms: 3, bathrooms: 1, areaBuilt: 81, propertySubtype: "piso", character: null, descriptionExcerpt: null },
+  { id: "870", reference: "URGELL-RENT", title: "Piso en Calle del Comte d'Urgell", address: "Calle del Comte d'Urgell", neighborhood: "L'Antiga Esquerra de l'Eixample", city: "Barcelona", price: 2800, rooms: 3, bathrooms: 2, areaBuilt: 115, propertySubtype: "piso", character: null, descriptionExcerpt: null },
 ];
 const groundingScenarios = [
   { name: "candidate-title-address", clue: "calle de Loreto", message: "¿Cuánto cuesta el piso en calle de Loreto?", candidates: [groundingCandidates[3]!], expected: "selected", id: "868" },
@@ -237,6 +239,7 @@ const groundingScenarios = [
   { name: "candidate-price", clue: "Bonavista unos 450.000", message: "El de Bonavista que costaba unos 450.000", candidates: groundingCandidates.slice(0, 2), expected: "selected", id: "865" },
   { name: "candidate-city-feature", clue: "Manresa con terraza", message: "El de Manresa con terraza", candidates: groundingCandidates, expected: "selected", id: "867" },
   { name: "candidate-contradiction", clue: "Girona", message: "El piso de Girona", candidates: [groundingCandidates[3]!], expected: "needs_input" },
+  { name: "candidate-same-address-ambiguous", clue: "Comte d'Urgell", message: "¿Cuánto cuesta el piso del Comte d'Urgell?", candidates: groundingCandidates.slice(4, 6), expected: "needs_input" },
 ] as const;
 const groundingEvidence = {
   currentSelection: {}, referencedEntities: [], recentResultEvidence: [], conversationHistory: [], candidateRefs: [],
