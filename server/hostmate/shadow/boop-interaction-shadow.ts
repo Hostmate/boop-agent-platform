@@ -59,6 +59,11 @@ export const conversationProposalShape = {
     target: z.string().trim(),
   }).strict(),
   freshRead: z.enum(["required", "not_required"]),
+  visitDraft: z.object({
+    startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    startTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
+    temporalPhrase: z.string().trim().min(1).max(160),
+  }).strict().nullable().default(null),
 } satisfies z.ZodRawShape;
 
 export const conversationProposalSchema = z.object(conversationProposalShape).strict().superRefine((value, context) => {
@@ -90,6 +95,14 @@ export const conversationProposalSchema = z.object(conversationProposalShape).st
     if (value.delegationProposal.kind !== expected.kind || value.delegationProposal.target !== expected.target) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["delegationProposal"], message: "Delegation must match the canonical Interaction catalog" });
     }
+  }
+  if (value.action === "visits.create_visit.v1") {
+    const leadCount = value.candidateRefs.filter((candidate) => candidate.type === "crm.lead").length;
+    const propertyCount = value.candidateRefs.filter((candidate) => candidate.type === "property.property").length;
+    if (!value.visitDraft) context.addIssue({ code: z.ZodIssueCode.custom, path: ["visitDraft"], message: "Create Visit requires an exact date and time" });
+    if (leadCount !== 1 || propertyCount !== 1) context.addIssue({ code: z.ZodIssueCode.custom, path: ["candidateRefs"], message: "Create Visit requires exactly one lead and one property candidate" });
+  } else if (value.visitDraft !== null) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["visitDraft"], message: "visitDraft is only valid for Create Visit" });
   }
 });
 export type ConversationProposal = z.infer<typeof conversationProposalSchema>;
@@ -201,6 +214,8 @@ OUTPUT CONTRACT
 - tasks.create_task.v1 only prepares a new task. A request to list, search or inspect existing/pending tasks must use action=unsupported because no task-read action exists. Never invent a task action.
 - delegationProposal is {kind:"skill", target:action} for a Skill, {kind:"multi_agent", target:action} for Multi-Agent, and {kind:"none", target:""} otherwise.
 - freshRead=required when current Product Data must be read to answer or execute safely. Context selects the entity; it does not replace a current domain read.
+- visitDraft is non-null only for visits.create_visit.v1. It contains the exact Europe/Madrid calendar date (YYYY-MM-DD), exact 24-hour time (HH:mm), and the user's temporal phrase. Never infer a missing time.
+- visits.create_visit.v1 requires exactly one authorized crm.lead candidate and one authorized property.property candidate. If either is missing or ambiguous, ask for clarification.
 - For a direct single-entity read, candidateRefs contains exactly one item: the primary entity. Include related candidates only when the proposed Skill or Multi-Agent objective actually needs them.
 - If needsClarification=true, action=needs_clarification and clarificationQuestion asks the smallest useful discriminating question.
 - The immediately previous result governs pronouns. If it says the entity does not exist, never fall back to an older selected or related entity; clarify.
@@ -213,6 +228,8 @@ GUIDE EXAMPLES
 5. "No, el anterior/otro" without one unique alternative -> needs_clarification; never repeat the active property.
 6. "¿Qué tareas pendientes tengo?" -> domain=tasks; action=unsupported; candidateRefs=[]; needsClarification=false. Never invent a task-read action.
 7. "El lead no tiene visitas próximas" + "¿De qué inmueble se trata?" -> needs_clarification; never use its interested property.
+8. With one known Lead and one known Property, "Agenda una visita mañana a las 17:00" -> visits.create_visit.v1, both candidates, and visitDraft with the exact date and 17:00. It prepares a Draft only.
+9. "Agenda una visita mañana por la tarde" -> needs_clarification because the hour is not exact; visitDraft=null.
 
 LANGUAGE EXAMPLE
 "Hola" -> any user-facing text in the proposal is Spanish, for example "¡Hola! ¿En qué puedo ayudarte?", never English.
@@ -299,7 +316,7 @@ export async function runBoopInteractionShadow(
   const prompt = buildInteractionPrompt({
     history,
     currentMessage: input.currentMessage,
-  }) + evidencePrompt;
+  }) + `\n\nCURRENT TIME (authoritative only for interpreting relative dates): ${new Date().toLocaleString("sv-SE", { timeZone: "Europe/Madrid" })} Europe/Madrid` + evidencePrompt;
   const promptHash = hashPrompt(prompt);
   const systemPrompt = `${HOSTMATE_INTERACTION_SYSTEM}\n${BOOP_INTERACTION_SHADOW_CONTRACT}`;
   const encoder = new TextEncoder();

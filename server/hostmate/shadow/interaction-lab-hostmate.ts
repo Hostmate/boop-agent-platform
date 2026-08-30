@@ -114,7 +114,7 @@ export type InteractionLabAuthenticatedSession = Readonly<{
 
 export type InteractionLabReadResult = Readonly<{
   action: string;
-  executionKind: "tool" | "skill" | "workflow";
+  executionKind: "tool" | "skill" | "workflow" | "write";
   summary: string;
   blocks?: readonly AgentContentBlock[];
   entities: readonly { type: string; id: string; label?: string; deepLink?: string }[];
@@ -123,6 +123,7 @@ export type InteractionLabReadResult = Readonly<{
   toolCalls: number;
   runCount: number;
   telemetry: { model: string; latencyMs: number; inputTokens: number; outputTokens: number; costUsd: number };
+  writeDraft?: Readonly<{ signedIntent: unknown; confirmationToken: string }>;
 }>;
 
 type InteractionLabReadTool =
@@ -354,6 +355,70 @@ export class InteractionLabHostmateConnection {
         telemetry: { model: input.model, latencyMs: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 },
       };
     }
+  }
+
+  async prepareVisitDraft(input: {
+    conversationId: string;
+    proposal: ConversationProposal;
+    evidence: ShadowEvidence;
+    model: string;
+  }): Promise<InteractionLabReadResult> {
+    if (!this.actor || !this.accessToken) await this.connect();
+    if (!input.proposal.visitDraft) throw new Error("INTERACTION_VISIT_TEMPORAL_REQUIRED");
+    const leadProposal = input.proposal.candidateRefs.find((candidate) => candidate.type === "crm.lead");
+    const propertyProposal = input.proposal.candidateRefs.find((candidate) => candidate.type === "property.property");
+    const lead = this.authorizedCandidate(input.proposal, input.evidence, ["crm.lead"]);
+    const property = this.authorizedCandidate(input.proposal, input.evidence, ["property.property"]);
+    if (!leadProposal || !propertyProposal) throw new Error("INTERACTION_LAB_AUTHORIZED_TARGET_REQUIRED");
+    const payload = await this.post<{ success?: boolean; data?: {
+      confirmationToken: string;
+      signedIntent: unknown;
+      card: { title: string; risk: "R2"; fields: Array<{ label: string; value: string }>; effects: string[]; expiresAt: string };
+    }; error?: string; message?: string }>("/api/v2/ai-interaction/visit-drafts", {
+      conversationId: input.conversationId,
+      leadId: lead.id,
+      propertyId: property.id,
+      startDate: input.proposal.visitDraft.startDate,
+      startTime: input.proposal.visitDraft.startTime,
+      temporalPhrase: input.proposal.visitDraft.temporalPhrase,
+      provenance: { leadEvidenceKey: leadProposal.evidenceKey, propertyEvidenceKey: propertyProposal.evidenceKey },
+    });
+    if (!payload.success || !payload.data) {
+      const denied = payload.error === "PERMISSION_DENIED";
+      return {
+        action: "visits.create_visit.v1", executionKind: "write",
+        summary: payload.message ?? (denied ? "No tienes permiso para crear visitas con el agente." : "No puedo preparar esta visita con los datos actuales."),
+        entities: [lead, property], status: denied ? "permission_denied" : "needs_input",
+        effectiveInput: {}, toolCalls: 0, runCount: 0,
+        telemetry: { model: input.model, latencyMs: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 },
+      };
+    }
+    const card = payload.data.card;
+    return {
+      action: "visits.create_visit.v1",
+      executionKind: "write",
+      summary: "He preparado la visita. Revisa los datos y confirma solo si son correctos.",
+      blocks: [{
+        type: "action_confirmation",
+        draftId: String((payload.data.signedIntent as { envelope?: { draftId?: string } }).envelope?.draftId ?? ""),
+        confirmationToken: payload.data.confirmationToken,
+        title: card.title,
+        description: "La visita todavía no se ha creado.",
+        target: lead,
+        changes: card.fields.map((field) => ({ field: field.label, to: field.value })),
+        sideEffects: card.effects,
+        risk: card.risk,
+        expiresAt: Date.parse(card.expiresAt),
+        successMessage: "Visita creada correctamente.",
+      }],
+      entities: [lead, property],
+      status: "completed",
+      effectiveInput: { startDate: input.proposal.visitDraft.startDate, startTime: input.proposal.visitDraft.startTime },
+      toolCalls: 0,
+      runCount: 0,
+      telemetry: { model: input.model, latencyMs: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 },
+      writeDraft: { signedIntent: payload.data.signedIntent, confirmationToken: payload.data.confirmationToken },
+    };
   }
 
   private async executeSkill(input: Readonly<{
@@ -785,6 +850,24 @@ export class InteractionLabHostmateConnection {
     }
     const payload = await response.json() as T & { error?: string };
     if (!response.ok) throw new Error(`Hostmate read failed (${response.status}): ${payload.error ?? "unknown"}`);
+    return payload;
+  }
+
+  private async post<T>(path: string, body: unknown): Promise<T> {
+    if (!this.accessToken) await this.connect();
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${this.accessToken}`,
+        "content-type": "application/json",
+        "x-interaction-runtime-token": required("INTERACTION_RUNTIME_INTERNAL_TOKEN"),
+        ...(this.actor?.effectiveTenantOverride ? { "x-tenant-id": this.actor.tenantId } : {}),
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(20_000),
+    });
+    const payload = await response.json() as T;
+    if (!response.ok) return payload;
     return payload;
   }
 

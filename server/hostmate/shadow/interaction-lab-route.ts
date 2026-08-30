@@ -135,7 +135,14 @@ export function createInteractionLabRouter(
     let readResult = null;
     try {
       readResult = activeConnection && actionAllowed
-        ? await activeConnection.executeRead({
+        ? result.proposal.action === "visits.create_visit.v1"
+          ? await activeConnection.prepareVisitDraft({
+              conversationId,
+              proposal: result.proposal,
+              evidence,
+              model: HOSTMATE_GENERATIVE_MODEL,
+            })
+          : await activeConnection.executeRead({
             conversationId,
             proposal: result.proposal,
             message: parsed.data.content,
@@ -191,7 +198,7 @@ export function createInteractionLabRouter(
       },
       safety: {
         proposalOnly: !readResult,
-        readOnly: true,
+        readOnly: readResult?.executionKind !== "write",
         toolsExecuted: readResult?.toolCalls ?? 0,
         productDataMutations: 0,
       },

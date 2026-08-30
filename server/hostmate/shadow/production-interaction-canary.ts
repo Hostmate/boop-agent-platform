@@ -24,6 +24,7 @@ const readOnlyActions = new Set([
   "visits.search_visits.v1",
   "visits.list_lead_visits.v1",
   "visits.get_visit.v1",
+  "visits.create_visit.v1",
 ]);
 const app = express();
 const requestConnections = new WeakMap<express.Request, InteractionLabHostmateConnection>();
@@ -31,7 +32,7 @@ const requestConnections = new WeakMap<express.Request, InteractionLabHostmateCo
 app.disable("x-powered-by");
 app.use(express.json({ limit: "128kb" }));
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", service: "hostmate-interaction-runtime", mode: "read_only" });
+  res.json({ status: "ok", service: "hostmate-interaction-runtime", mode: "safe_write_prepare" });
 });
 app.use((req, res, next) => {
   if (!isInteractionCanaryAuthorized(req.headers.authorization, internalToken)) {
@@ -73,7 +74,7 @@ app.use("/interaction", createInteractionLabRouter(undefined, {
 const port = Number(process.env.INTERACTION_RUNTIME_PORT ?? 4311);
 const server = createServer(app);
 server.listen(port, "0.0.0.0", () => {
-  process.stdout.write(`Hostmate Interaction Runtime listening on ${port} in read-only mode\n`);
+  process.stdout.write(`Hostmate Interaction Runtime listening on ${port} with human-confirmed visit drafts\n`);
 });
 
 for (const signal of ["SIGTERM", "SIGINT"] as const) {

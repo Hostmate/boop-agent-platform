@@ -64,4 +64,25 @@ describe("Interaction capability catalog", () => {
       delegationProposal: { kind: "multi_agent", target: "multi-agent.lead-opportunity-analysis.v1" },
     }).success).toBe(false);
   });
+
+  it("requires an exact temporal draft plus one lead and one property for Create Visit", () => {
+    const base = {
+      intent: "crear visita", domain: "visits" as const, action: "visits.create_visit.v1" as const,
+      candidateRefs: [
+        { evidenceKey: "e1", type: "crm.lead" },
+        { evidenceKey: "e2", type: "property.property" },
+      ],
+      needsClarification: false, clarificationQuestion: "",
+      delegationProposal: { kind: "none" as const, target: "" }, freshRead: "required" as const,
+    };
+    expect(conversationProposalSchema.safeParse({
+      ...base,
+      visitDraft: { startDate: "2026-09-01", startTime: "17:00", temporalPhrase: "mañana a las 17:00" },
+    }).success).toBe(true);
+    expect(conversationProposalSchema.safeParse({ ...base, visitDraft: null }).success).toBe(false);
+    expect(conversationProposalSchema.safeParse({
+      ...base, candidateRefs: [{ evidenceKey: "e1", type: "crm.lead" }],
+      visitDraft: { startDate: "2026-09-01", startTime: "17:00", temporalPhrase: "mañana a las 17:00" },
+    }).success).toBe(false);
+  });
 });
