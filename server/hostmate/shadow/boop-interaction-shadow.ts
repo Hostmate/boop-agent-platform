@@ -209,7 +209,7 @@ export type BoopInteractionShadowResult = Readonly<{
   error?: Readonly<{ code: string; message: string }>;
 }>;
 
-export const BOOP_INTERACTION_SHADOW_CONTRACT_VERSION = 8 as const;
+export const BOOP_INTERACTION_SHADOW_CONTRACT_VERSION = 9 as const;
 
 export const BOOP_INTERACTION_SHADOW_CONTRACT = `
 You are a proposal-only Boop Interaction shadow. Call the inert
@@ -231,6 +231,7 @@ OUTPUT CONTRACT
 - visitDraft and visitTargetSearch exist only for visits.create_visit.v1. Require exact Europe/Madrid date+time; never infer a missing hour. A named person is the Lead, while the commercial is the authenticated actor.
 - Property discovery ("busca pisos con terraza") uses property.search_properties.v1 with propertyTargetSearch=null. Concrete identification without evidence ("cuánto cuesta el piso de Bonavista") uses the same action plus propertyTargetSearch={query:"Bonavista"}.
 - A Property already present in evidence uses property.get_property.v1 with its candidate. For ordinals, never launch a new search to manufacture context.
+- A descriptive Property clue selects known evidence only when exactly one candidate matches. If several share it, clarify. Candidate order applies only to explicit ordinals; active focus only to "este"/"ese".
 - "otro" never means "anterior": select only when exactly one alternative of the required type exists. With two or more alternatives, clarify; never repeat the active property.
 - If needsClarification=true, action=needs_clarification and ask the smallest discriminating question. The latest result governs pronouns; never fall back past an explicit no-result.
 
@@ -245,6 +246,7 @@ GUIDE EXAMPLES
 8. No known targets + "Agenda una visita mañana a las 10:00 para el piso en calle de Loreto con Roger Closas" -> visitTargetSearch for both targets; Roger Closas is the lead.
 9. "Agenda una visita mañana por la tarde" -> needs_clarification.
 10. No Property evidence + "¿Cuánto costaba el piso de Bonavista?" -> property.search_properties.v1 with propertyTargetSearch={query:"Bonavista"}.
+11. Two known Comte d'Urgell Properties + "el piso de Comte d'Urgell" -> needs_clarification; never pick the first.
 `;
 
 const OPAQUE_EVIDENCE_KEY = /^e[1-9][0-9]*$/;

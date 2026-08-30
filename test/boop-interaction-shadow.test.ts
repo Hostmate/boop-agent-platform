@@ -45,9 +45,10 @@ describe("Boop Interaction Pareto shadow", () => {
   });
 
   it("keeps the proposal contract compact, canonical and example-guided", () => {
-    expect(BOOP_INTERACTION_SHADOW_CONTRACT_VERSION).toBe(8);
+    expect(BOOP_INTERACTION_SHADOW_CONTRACT_VERSION).toBe(9);
     expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("GUIDE EXAMPLES");
     expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("never repeat the active property");
+    expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("If several share it, clarify");
     expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("If the message is Spanish, write them in Spanish");
     expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("skill.prepare-lead-brief.v1");
     expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("multi-agent.lead-opportunity-analysis.v1");

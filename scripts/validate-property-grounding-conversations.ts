@@ -22,6 +22,8 @@ const properties = {
   a: { type: "property.property", id: "101", label: "Bonavista 3 habitaciones" },
   b: { type: "property.property", id: "102", label: "Bonavista 4 habitaciones" },
   c: { type: "property.property", id: "103", label: "Manresa con terraza" },
+  urgellSale: { type: "property.property", id: "104", label: "Piso en Calle del Comte d'Urgell" },
+  urgellRent: { type: "property.property", id: "105", label: "Piso en Calle del Comte d'Urgell" },
 } as const satisfies Record<string, EntityRef>;
 const leads = {
   a: { type: "crm.lead", id: "201", label: "Laura Soler" },
@@ -77,6 +79,17 @@ function entityDetail(ref: EntityRef): AgentContentBlock {
     title: ref.label ?? "Inmueble",
     ref,
     sections: [{ title: "Datos", fields: [{ label: "Referencia", value: ref.id }] }],
+  };
+}
+
+function duplicateAddressPropertyList(): AgentContentBlock {
+  return {
+    type: "entity_list",
+    title: "Inmuebles encontrados",
+    items: [
+      { ref: properties.urgellSale, title: properties.urgellSale.label!, subtitle: "00951 · Barcelona", fields: [{ label: "Precio", value: "585.000 €" }, { label: "Operación", value: "comprar" }, { label: "Superficie", value: "81 m²" }] },
+      { ref: properties.urgellRent, title: properties.urgellRent.label!, subtitle: "00950 · Barcelona", fields: [{ label: "Precio", value: "2.800 €" }, { label: "Operación", value: "alquilar" }, { label: "Superficie", value: "115 m²" }] },
+    ],
   };
 }
 
@@ -162,6 +175,20 @@ const scenarios: readonly Scenario[] = [
   { name: "create-with-named-targets", currentMessage: "Agenda una visita mañana a las 10:00 para el piso en calle de Loreto con Roger Closas", expectedAction: "visits.create_visit.v1", expectedTargetNull: true },
   { name: "create-missing-time", currentMessage: "Agenda una visita mañana por la tarde para el piso de Bonavista con Roger Closas", expectedAction: "needs_clarification", expectedClarification: true },
   { name: "discovery-descriptive", currentMessage: "Busca pisos reformados con terraza en Barcelona", expectedAction: "property.search_properties.v1", expectedTargetNull: true },
+  {
+    name: "known-duplicate-address-ambiguous",
+    currentMessage: "¿Cuánto cuesta el piso del Comte d'Urgell?",
+    messages: [
+      message({ conversationId: "known-duplicate-address-ambiguous", sequence: 1, role: "user", content: "Busca pisos en Barcelona con terraza" }),
+      message({
+        conversationId: "known-duplicate-address-ambiguous", sequence: 2, role: "assistant", content: "He encontrado dos inmuebles en Comte d'Urgell.",
+        blocks: [duplicateAddressPropertyList()],
+        contextRefs: context({}, [properties.urgellSale, properties.urgellRent]),
+      }),
+    ],
+    expectedAction: "needs_clarification",
+    expectedClarification: true,
+  },
 ];
 
 const adapter = new OpenRouterAdapter({
