@@ -17,6 +17,15 @@ process.env.OPENROUTER_API_KEY = required("OPENROUTER_API_KEY");
 const internalToken = Buffer.from(required("INTERACTION_CANARY_INTERNAL_TOKEN"));
 const connection = new InteractionLabHostmateConnection();
 let tenantStatus = await connection.connect();
+const readOnlyActions = new Set([
+  "crm.search_leads.v1",
+  "crm.get_lead_context.v1",
+  "property.search_properties.v1",
+  "property.get_property.v1",
+  "visits.search_visits.v1",
+  "visits.list_lead_visits.v1",
+  "visits.get_visit.v1",
+]);
 const app = express();
 
 app.disable("x-powered-by");
@@ -31,7 +40,7 @@ app.use((req, res, next) => {
   }
   next();
 });
-app.use("/interaction", createInteractionLabRouter(connection));
+app.use("/interaction", createInteractionLabRouter(connection, { allowedActions: readOnlyActions }));
 
 const port = Number(process.env.INTERACTION_CANARY_PORT ?? 4311);
 const server = createServer(app);

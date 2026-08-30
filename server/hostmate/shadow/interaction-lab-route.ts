@@ -40,7 +40,14 @@ export function interactionLabReply(proposal: ConversationProposal | null): stri
   return `He entendido que quieres ${action}. En este laboratorio no ejecutaré la acción.`;
 }
 
-export function createInteractionLabRouter(connection?: InteractionLabHostmateConnection) {
+export function isInteractionActionAllowed(action: string, allowedActions?: ReadonlySet<string>): boolean {
+  return !allowedActions || action === "needs_clarification" || action === "unsupported" || allowedActions.has(action);
+}
+
+export function createInteractionLabRouter(
+  connection?: InteractionLabHostmateConnection,
+  options: Readonly<{ allowedActions?: ReadonlySet<string> }> = {},
+) {
   const router = Router();
   const conversations = new InteractionLabConversationStore();
 
@@ -111,9 +118,10 @@ export function createInteractionLabRouter(connection?: InteractionLabHostmateCo
       return;
     }
 
+    const actionAllowed = isInteractionActionAllowed(result.proposal.action, options.allowedActions);
     let readResult = null;
     try {
-      readResult = connection
+      readResult = connection && actionAllowed
         ? await connection.executeRead({
             conversationId,
             proposal: result.proposal,
@@ -137,6 +145,9 @@ export function createInteractionLabRouter(connection?: InteractionLabHostmateCo
       return;
     }
 
+    const reply = actionAllowed
+      ? readResult?.summary ?? interactionLabReply(result.proposal)
+      : "Esta capacidad no está disponible en el acceso de solo lectura.";
     conversations.appendUser(conversationId, parsed.data.content);
     if (readResult) {
       conversations.rememberRead(conversationId, {
@@ -146,14 +157,14 @@ export function createInteractionLabRouter(connection?: InteractionLabHostmateCo
     }
     conversations.appendAssistant({
       conversationId,
-      content: readResult?.summary ?? interactionLabReply(result.proposal),
+      content: reply,
       blocks: readResult?.blocks,
       entities: readResult?.entities,
     });
 
     res.json({
       conversationId,
-      reply: readResult?.summary ?? interactionLabReply(result.proposal),
+      reply,
       proposal: result.proposal,
       validation: result.validation,
       readResult,
