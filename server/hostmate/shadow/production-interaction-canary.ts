@@ -1,16 +1,19 @@
 import "../../env-setup.js";
 import express from "express";
 import { createServer } from "node:http";
+import { readFileSync } from "node:fs";
 import { isInteractionCanaryAuthorized } from "./interaction-canary-auth.js";
 import { createInteractionLabRouter } from "./interaction-lab-route.js";
 import { InteractionLabHostmateConnection } from "./interaction-lab-hostmate.js";
 
 function required(name: string): string {
-  const value = process.env[name]?.trim();
+  const path = process.env[`${name}_FILE`]?.trim();
+  const value = path ? readFileSync(path, "utf8").trim() : process.env[name]?.trim();
   if (!value) throw new Error(`${name} is required`);
   return value;
 }
 
+process.env.OPENROUTER_API_KEY = required("OPENROUTER_API_KEY");
 const internalToken = Buffer.from(required("INTERACTION_CANARY_INTERNAL_TOKEN"));
 const connection = new InteractionLabHostmateConnection();
 let tenantStatus = await connection.connect();
