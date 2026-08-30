@@ -4,6 +4,7 @@ import type { AgentContentBlock, ExecutionResult } from "../../contracts/executi
 import { entityRefSchema } from "../../contracts/execution-result.js";
 import type { ProductToolDefinition } from "../../tools/registry.js";
 import { VISIT_STATUSES } from "./list-lead-visits.js";
+import { formatVisitWallClock, normalizeVisitWallClock, visitWallClockSchema } from "./visit-wall-clock.js";
 
 export const VISITS_SEARCH_VISITS_TOOL_ID = "visits.search_visits.v1";
 export const VISITS_SEARCH_VISITS_TOOL_VERSION = 1;
@@ -67,7 +68,7 @@ const visitRefSchema = entityRefSchema.extend({
 
 const visitSearchItemSchema = z.object({
   ref: visitRefSchema,
-  at: z.string().datetime(),
+  at: visitWallClockSchema,
   status: z.enum(VISIT_STATUSES),
   clientName: z.string().max(160).optional(),
   property: z.object({
@@ -104,9 +105,9 @@ function present(value: string | null | undefined): string | undefined {
 }
 
 function toIso(value: string): string {
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) throw new Error("INVALID_VISIT_DATE");
-  return parsed.toISOString();
+  const normalized = normalizeVisitWallClock(value);
+  if (!normalized) throw new Error("INVALID_VISIT_DATE");
+  return normalized;
 }
 
 export function createSearchVisitsTool(input: {
@@ -183,7 +184,8 @@ export function createSearchVisitsTool(input: {
 }
 
 function formatDateTime(value: string, timezone: string): string {
-  return new Intl.DateTimeFormat("es-ES", { dateStyle: "medium", timeStyle: "short", timeZone: timezone }).format(new Date(value));
+  void timezone;
+  return formatVisitWallClock(value);
 }
 
 function blocks(output: SearchVisitsOutput): AgentContentBlock[] | undefined {

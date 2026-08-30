@@ -4,6 +4,7 @@ import type { EntityRef, NormalizedAgentErrorCode } from "../../contracts/domain
 import { entityRefSchema, type AgentContentBlock, type ExecutionResult } from "../../contracts/execution-result.js";
 import type { ProductToolDefinition } from "../../tools/registry.js";
 import { VISIT_STATUSES } from "./list-lead-visits.js";
+import { normalizeVisitWallClock, visitWallClockSchema } from "./visit-wall-clock.js";
 
 export const VISITS_GET_VISIT_TOOL_ID = "visits.get_visit.v1";
 export const VISITS_GET_VISIT_TOOL_VERSION = 1;
@@ -107,7 +108,7 @@ const propertySchema = z.object({
 const assignedAgentSchema = z.object({ id: z.string().regex(/^[1-9]\d*$/).max(20), name: z.string().max(160).optional() }).strict();
 const rescheduleSchema = z.object({
   eventType: z.enum(["client_rescheduled", "agent_rescheduled"]), actor: z.enum(["client", "agent", "system"]),
-  oldAt: z.string().datetime().optional(), newAt: z.string().datetime(), oldStatus: z.string().max(80).optional(),
+  oldAt: visitWallClockSchema.optional(), newAt: visitWallClockSchema, oldStatus: z.string().max(80).optional(),
   newStatus: z.string().max(80).optional(), recordedAt: z.string().datetime().optional(),
 }).strict();
 const telemetrySchema = z.object({
@@ -117,7 +118,7 @@ const telemetrySchema = z.object({
 }).strict();
 const common = {
   ref: visitRefSchema,
-  at: z.string().datetime(),
+  at: visitWallClockSchema,
   timezone: z.string().min(1).max(100),
   visitType: z.string().max(80).optional(),
   durationMinutes: z.number().int().nonnegative().max(1440).optional(),
@@ -153,6 +154,11 @@ function present(value: string | null | undefined): string | undefined {
 }
 
 function iso(value: string | null | undefined): string | undefined {
+  if (!value) return undefined;
+  return normalizeVisitWallClock(value);
+}
+
+function instantIso(value: string | null | undefined): string | undefined {
   if (!value) return undefined;
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
@@ -215,7 +221,7 @@ export function sanitizeVisitDetail(result: VisitDetailServiceResult, requested:
     },
     lastReschedule: last ? {
       eventType: last.eventType, actor: last.actor, oldAt: iso(last.oldVisitDatetime), newAt: iso(last.newVisitDatetime),
-      oldStatus: present(last.oldStatus), newStatus: present(last.newStatus), recordedAt: iso(last.createdAt),
+      oldStatus: present(last.oldStatus), newStatus: present(last.newStatus), recordedAt: instantIso(last.createdAt),
     } : undefined,
   });
 }

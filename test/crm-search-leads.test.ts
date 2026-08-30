@@ -238,7 +238,11 @@ describe("visits.list_lead_visits.v1 contract", () => {
     expect(result).toMatchObject({
       timezone: "Europe/Madrid",
       lead: { ref: { type: "crm.lead", id: "123", deepLink: "/conversations?leadId=123" } },
-      visits: [{ ref: { type: "visits.visit", id: "91", deepLink: "/visits?visitId=91" }, status: "confirmed" }],
+      visits: [{
+        ref: { type: "visits.visit", id: "91", deepLink: "/visits?visitId=91" },
+        at: "2099-08-20T10:00:00",
+        status: "confirmed",
+      }],
     });
     expect(JSON.stringify(result)).not.toMatch(/tenant_id|relation_source|notes|secret/);
   });
@@ -270,6 +274,7 @@ describe("visits.get_visit.v1 contract", () => {
     expect(port.getVisit).toHaveBeenCalledWith(expect.objectContaining({ tenantId: "7", userId: "10" }), { visit: expect.objectContaining({ type: "visits.visit", id: "91" }) });
     expect(result).toMatchObject({
       kind: "individual", status: "confirmed", timezone: "Europe/Madrid",
+      at: "2099-08-20T10:00:00",
       ref: { type: "visits.visit", id: "91", deepLink: "/visits?visitId=91" },
       lead: { ref: { type: "crm.lead", id: "123", deepLink: "/conversations?leadId=123" } },
       property: { ref: { type: "property.property", id: "55" } },

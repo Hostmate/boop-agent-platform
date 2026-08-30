@@ -6,6 +6,7 @@ import {
   toSearchVisitsExecutionResult,
   type VisitSearchPort,
 } from "../server/hostmate/product-tools/visits/search-visits.js";
+import { formatVisitWallClock, normalizeVisitWallClock } from "../server/hostmate/product-tools/visits/visit-wall-clock.js";
 
 function actor(role: "agent" | "admin" = "admin") {
   return createActorContext({
@@ -70,6 +71,7 @@ describe("visits.search_visits.v1", () => {
     );
     expect(output.visits[0]).toMatchObject({
       ref: { type: "visits.visit", id: "484" },
+      at: "2099-08-30T17:00:00",
       property: { ref: { type: "property.property", id: "865" } },
       lead: { ref: { type: "crm.lead", id: "5063" } },
     });
@@ -78,6 +80,20 @@ describe("visits.search_visits.v1", () => {
       entities: [{ type: "visits.visit", id: "484" }],
       blocks: [{ type: "entity_list" }],
     });
+  });
+
+  it("preserves Madrid wall-clock slots across legacy/new transport and DST seasons", () => {
+    expect(normalizeVisitWallClock("2026-08-31T19:00:00.000Z")).toBe("2026-08-31T19:00:00");
+    expect(normalizeVisitWallClock("2026-01-15T19:00:00")).toBe("2026-01-15T19:00:00");
+    expect(normalizeVisitWallClock("2026-03-29T03:30:00")).toBe("2026-03-29T03:30:00");
+    expect(normalizeVisitWallClock("2026-10-25T02:30:00.000Z")).toBe("2026-10-25T02:30:00");
+    expect(formatVisitWallClock("2026-08-31T19:00:00")).toContain("19:00");
+    expect(formatVisitWallClock("2026-01-15T19:00:00")).toContain("19:00");
+  });
+
+  it("fails closed for impossible or timezone-offset visit values", () => {
+    expect(normalizeVisitWallClock("2026-02-30T19:00:00")).toBeUndefined();
+    expect(normalizeVisitWallClock("2026-08-31T19:00:00+02:00")).toBeUndefined();
   });
 
   it("prevents an Agent from widening the query to the whole tenant", async () => {

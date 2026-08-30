@@ -3,6 +3,7 @@ import type { ActorContext } from "../../contracts/actor-context.js";
 import type { EntityRef, NormalizedAgentErrorCode } from "../../contracts/domain.js";
 import { entityRefSchema, type AgentContentBlock, type ExecutionResult } from "../../contracts/execution-result.js";
 import type { ProductToolDefinition } from "../../tools/registry.js";
+import { formatVisitWallClock, normalizeVisitWallClock, visitWallClockSchema } from "./visit-wall-clock.js";
 
 export const VISITS_LIST_LEAD_VISITS_TOOL_ID = "visits.list_lead_visits.v1";
 export const VISITS_LIST_LEAD_VISITS_TOOL_VERSION = 1;
@@ -74,7 +75,7 @@ const visitRefSchema = entityRefSchema.extend({
 
 const visitOutputSchema = z.object({
   ref: visitRefSchema,
-  at: z.string().datetime(),
+  at: visitWallClockSchema,
   status: z.enum(VISIT_STATUSES),
   property: z.object({ title: z.string().max(240).optional(), reference: z.string().max(100).optional(), address: z.string().max(300).optional() }).strict().optional(),
   assignedAgent: z.string().max(160).optional(),
@@ -109,8 +110,7 @@ function present(value: string | null | undefined): string | undefined {
 }
 
 function isoDate(value: string): string | undefined {
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+  return normalizeVisitWallClock(value);
 }
 
 function sanitize(result: LeadVisitsServiceResult, requestedRef: EntityRef, timezone: string): ListLeadVisitsOutput {
@@ -177,9 +177,8 @@ export function createListLeadVisitsTool(input: {
 }
 
 function formatDateTime(value: string, timezone: string): string {
-  return new Intl.DateTimeFormat("es-ES", {
-    dateStyle: "medium", timeStyle: "short", timeZone: timezone,
-  }).format(new Date(value));
+  void timezone;
+  return formatVisitWallClock(value);
 }
 
 function visitBlocks(output: ListLeadVisitsOutput): AgentContentBlock[] | undefined {
