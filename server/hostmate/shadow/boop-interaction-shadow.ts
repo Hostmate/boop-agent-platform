@@ -3,7 +3,7 @@ import { z } from "zod";
 import {
   buildInteractionPrompt,
   type InteractionPromptMessage,
-} from "../../interaction-agent.js";
+} from "../../interaction-prompt.js";
 import { defineRuntimeTool } from "../../runtimes/tool.js";
 import { runtimeText, type RuntimeRunRequest } from "../../runtimes/types.js";
 import {

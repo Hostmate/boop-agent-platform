@@ -3,7 +3,6 @@ WORKDIR /src
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json ./
-COPY convex ./convex
 COPY server ./server
 RUN npm run build:interaction-canary
 

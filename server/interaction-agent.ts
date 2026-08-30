@@ -24,6 +24,8 @@ import {
   fetchStoredBytes,
 } from "./images/content-blocks.js";
 import { redactPhoneNumbers } from "./privacy.js";
+import { buildInteractionPrompt } from "./interaction-prompt.js";
+export { buildInteractionPrompt, type InteractionPromptMessage } from "./interaction-prompt.js";
 
 export const INTERACTION_SYSTEM = `You are Boop, a personal agent the user texts from iMessage.
 
@@ -250,36 +252,6 @@ interface HandleOpts {
   persistAssistantReply?: boolean;
   images?: Array<{ storageId: string; mediaType: string }>;
   mediaError?: string;
-}
-
-export type InteractionPromptMessage = Readonly<{
-  role: string;
-  content: string;
-}>;
-
-/**
- * Shared prompt construction primitive used by the real Interaction Agent.
- * Shadow consumers may reuse this without invoking handleUserMessage, which
- * intentionally owns persistence, Memory extraction, usage and delegation.
- */
-export function buildInteractionPrompt(input: {
-  history: readonly InteractionPromptMessage[];
-  currentMessage: string;
-  mediaError?: string;
-  proactive?: boolean;
-}): string {
-  const userText = input.mediaError
-    ? `[user sent images but they couldn't be downloaded: ${input.mediaError}]\n${input.currentMessage}`
-    : input.currentMessage;
-  if (input.proactive) {
-    return `Standalone proactive notice. Write a concise user-facing iMessage from this notice only. Do not research, spawn agents, or continue any prior conversation.\n\n${userText}`;
-  }
-  const historyBlock = input.history
-    .map((message) => `${message.role.toUpperCase()}: ${message.content}`)
-    .join("\n");
-  return historyBlock
-    ? `Prior turns:\n${historyBlock}\n\nCurrent message:\n${userText}`
-    : userText;
 }
 
 function randomId(prefix: string): string {
