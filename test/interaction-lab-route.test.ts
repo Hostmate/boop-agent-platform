@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { interactionLabReply, isInteractionActionAllowed } from "../server/hostmate/shadow/interaction-lab-route.js";
+import { InteractionLabHostmateConnection } from "../server/hostmate/shadow/interaction-lab-hostmate.js";
 import type { ConversationProposal } from "../server/hostmate/shadow/boop-interaction-shadow.js";
 
 function proposal(overrides: Partial<ConversationProposal> = {}): ConversationProposal {
@@ -44,5 +45,24 @@ describe("Interaction Lab", () => {
     expect(isInteractionActionAllowed("multi-agent.lead-opportunity-analysis.v1", allowed)).toBe(false);
     expect(isInteractionActionAllowed("visits.create_visit.v1", allowed)).toBe(false);
     expect(isInteractionActionAllowed("needs_clarification", allowed)).toBe(true);
+  });
+
+  it("binds each runtime connection to the authenticated request actor", () => {
+    const connection = new InteractionLabHostmateConnection({
+      accessToken: "opaque-session-token",
+      tenantId: "12",
+      userId: "48",
+      role: "agent",
+      sessionId: "session-fingerprint",
+    });
+
+    expect(connection.status()).toEqual({
+      connected: true,
+      tenantId: "12",
+      tenantName: undefined,
+      userId: "48",
+      role: "agent",
+      mode: "read_only",
+    });
   });
 });

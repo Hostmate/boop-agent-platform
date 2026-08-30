@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { z } from "zod";
 import {
   runBoopInteractionShadow,
@@ -46,13 +46,17 @@ export function isInteractionActionAllowed(action: string, allowedActions?: Read
 
 export function createInteractionLabRouter(
   connection?: InteractionLabHostmateConnection,
-  options: Readonly<{ allowedActions?: ReadonlySet<string> }> = {},
+  options: Readonly<{
+    allowedActions?: ReadonlySet<string>;
+    resolveConnection?: (req: Request) => InteractionLabHostmateConnection | Promise<InteractionLabHostmateConnection>;
+  }> = {},
 ) {
   const router = Router();
   const conversations = new InteractionLabConversationStore();
 
-  router.get("/status", (_req, res) => {
-    res.json({ tenant: connection?.status() ?? { connected: false, mode: "read_only" } });
+  router.get("/status", async (req, res) => {
+    const activeConnection = options.resolveConnection ? await options.resolveConnection(req) : connection;
+    res.json({ tenant: activeConnection?.status() ?? { connected: false, mode: "read_only" } });
   });
 
   router.post("/chat", async (req, res) => {
@@ -74,17 +78,26 @@ export function createInteractionLabRouter(
       return;
     }
 
+    const activeConnection = options.resolveConnection ? await options.resolveConnection(req) : connection;
     const conversationId = parsed.data.conversationId ?? `interaction-lab-${randomUUID()}`;
-    const status = connection?.status();
+    const status = activeConnection?.status();
     const scope = {
       tenantId: status?.tenantId ?? "interaction-lab",
       userId: status?.userId ?? "interaction-lab-user",
     };
-    const stored = conversations.getOrHydrate({
-      conversationId,
-      scope,
-      history: parsed.data.messages,
-    });
+    let stored;
+    try {
+      stored = conversations.getOrHydrate({ conversationId, scope, history: parsed.data.messages });
+    } catch (cause) {
+      if (cause instanceof Error && cause.message === "INTERACTION_LAB_CONVERSATION_SCOPE_MISMATCH") {
+        res.status(409).json({
+          error: "CONVERSATION_SCOPE_MISMATCH",
+          message: "Esta conversación no pertenece a la sesión autenticada.",
+        });
+        return;
+      }
+      throw cause;
+    }
     const evidence = buildCanonicalConversationEvidence({
       actor: scope,
       conversationId,
@@ -121,8 +134,8 @@ export function createInteractionLabRouter(
     const actionAllowed = isInteractionActionAllowed(result.proposal.action, options.allowedActions);
     let readResult = null;
     try {
-      readResult = connection && actionAllowed
-        ? await connection.executeRead({
+      readResult = activeConnection && actionAllowed
+        ? await activeConnection.executeRead({
             conversationId,
             proposal: result.proposal,
             message: parsed.data.content,

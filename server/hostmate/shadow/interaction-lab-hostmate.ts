@@ -102,6 +102,16 @@ export type InteractionLabTenantStatus = Readonly<{
   mode: "read_only";
 }>;
 
+export type InteractionLabAuthenticatedSession = Readonly<{
+  accessToken: string;
+  tenantId: string;
+  userId: string;
+  role: "agent" | "admin" | "superadmin";
+  tenantName?: string;
+  sessionId: string;
+  effectiveTenantOverride?: boolean;
+}>;
+
 export type InteractionLabReadResult = Readonly<{
   action: string;
   executionKind: "tool" | "skill" | "workflow";
@@ -222,16 +232,34 @@ export class InteractionLabHostmateConnection {
   private tenantName?: string;
 
   private readonly baseUrl = (process.env.INTERACTION_LAB_HOSTMATE_BASE_URL ?? "https://realestate.hostmate.es").replace(/\/$/, "");
-  private readonly expectedTenantId = required("INTERACTION_LAB_HOSTMATE_TENANT_ID");
+  constructor(session?: InteractionLabAuthenticatedSession) {
+    if (!session) return;
+    this.accessToken = session.accessToken;
+    this.tenantName = session.tenantName;
+    this.actor = createActorContext({
+      tenantId: session.tenantId,
+      userId: session.userId,
+      role: session.role,
+      isSuperAdmin: session.role === "superadmin",
+      permissions: ["crm.read", "property.read", "visits.read"],
+      locale: "es-ES",
+      timezone: "Europe/Madrid",
+      sessionId: session.sessionId,
+      permissionsVersion: "production-read-only-v1",
+      effectiveTenantOverride: session.effectiveTenantOverride ?? false,
+    });
+  }
 
   async connect(): Promise<InteractionLabTenantStatus> {
+    if (this.accessToken && this.actor) return this.status();
+    const expectedTenantId = required("INTERACTION_LAB_HOSTMATE_TENANT_ID");
     const response = await fetch(`${this.baseUrl}/api/v2/auth/login`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         email: required("INTERACTION_LAB_HOSTMATE_EMAIL"),
         password: required("INTERACTION_LAB_HOSTMATE_PASSWORD"),
-        tenant_id: Number(this.expectedTenantId),
+        tenant_id: Number(expectedTenantId),
       }),
       signal: AbortSignal.timeout(15_000),
     });
@@ -239,7 +267,7 @@ export class InteractionLabHostmateConnection {
     const token = payload.accessToken ?? payload.data?.accessToken;
     const user = payload.user ?? payload.data?.user;
     if (!response.ok || !token || !user) throw new Error(`Hostmate login failed (${response.status})`);
-    if (String(user.tenant_id) !== this.expectedTenantId) throw new Error("Authenticated tenant does not match the configured lab tenant");
+    if (String(user.tenant_id) !== expectedTenantId) throw new Error("Authenticated tenant does not match the configured lab tenant");
 
     this.accessToken = token;
     this.tenantName = user.tenant_name;
@@ -744,7 +772,10 @@ export class InteractionLabHostmateConnection {
     if (!this.accessToken) await this.connect();
     const request = () => fetch(`${this.baseUrl}${path}`, {
       method: "GET",
-      headers: { authorization: `Bearer ${this.accessToken}` },
+      headers: {
+        authorization: `Bearer ${this.accessToken}`,
+        ...(this.actor?.effectiveTenantOverride ? { "x-tenant-id": this.actor.tenantId } : {}),
+      },
       signal: AbortSignal.timeout(20_000),
     });
     let response = await request();
