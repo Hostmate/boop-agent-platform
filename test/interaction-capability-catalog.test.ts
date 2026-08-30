@@ -65,7 +65,7 @@ describe("Interaction capability catalog", () => {
     }).success).toBe(false);
   });
 
-  it("requires an exact temporal draft plus one lead and one property for Create Visit", () => {
+  it("requires exact temporal intent plus known or searchable targets for Create Visit", () => {
     const base = {
       intent: "crear visita", domain: "visits" as const, action: "visits.create_visit.v1" as const,
       candidateRefs: [
@@ -84,5 +84,11 @@ describe("Interaction capability catalog", () => {
       ...base, candidateRefs: [{ evidenceKey: "e1", type: "crm.lead" }],
       visitDraft: { startDate: "2026-09-01", startTime: "17:00", temporalPhrase: "mañana a las 17:00" },
     }).success).toBe(false);
+    expect(conversationProposalSchema.safeParse({
+      ...base,
+      candidateRefs: [],
+      visitDraft: { startDate: "2026-09-01", startTime: "10:00", temporalPhrase: "mañana a las 10:00" },
+      visitTargetSearch: { leadQuery: "Roger Closas", propertyQuery: "calle de Loreto" },
+    }).success).toBe(true);
   });
 });

@@ -73,6 +73,73 @@ describe("Interaction Lab composite execution", () => {
     expect(plan.capability).toBe("visits.visit.search");
   });
 
+  it("resolves named Visit targets with existing tenant-scoped searches before preparing the Draft", async () => {
+    const lab = connection() as any;
+    lab.searchLeads = vi.fn(async () => ({
+      items: [{ id: "41", client_name: "Roger Closas" }], total: 1, page: 1, limit: 6,
+      telemetry: { service: "lead.service.list", latencyMs: 2 },
+    }));
+    lab.searchProperties = vi.fn(async () => ({
+      items: [{ id: "865", reference: "LORETO", title: "Piso en calle de Loreto", operation: "comprar", propertyType: "piso", price: 400000, currency: "EUR", city: "Barcelona", neighborhood: null, rooms: 3, bathrooms: 2, areaBuilt: 90, status: "activo", features: [], associatedAgent: null }],
+      total: 1, returned: 1, hasMore: false, telemetry: { service: "property.service.list", latencyMs: 3 },
+    }));
+    lab.post = vi.fn(async () => ({
+      success: true,
+      data: {
+        confirmationToken: "opaque-confirmation",
+        signedIntent: { envelope: { draftId: "draft-1" } },
+        card: { title: "Crear visita", risk: "R2", fields: [], effects: [], expiresAt: "2026-09-01T09:00:00.000Z" },
+      },
+    }));
+    const emptyEvidence: ShadowEvidence = {
+      currentSelection: {}, referencedEntities: [], recentResultEvidence: [], conversationHistory: [], emittedEntityRefs: [], candidateRefs: [],
+      captureStatus: { referenced: "captured", blocks: "captured", prompt: "captured" }, entityIndex: {},
+    };
+    const result = await lab.prepareVisitDraft({
+      conversationId: "visit-search-targets",
+      model: "test",
+      evidence: emptyEvidence,
+      proposal: {
+        intent: "agendar visita", domain: "visits", action: "visits.create_visit.v1", candidateRefs: [],
+        needsClarification: false, clarificationQuestion: "", delegationProposal: { kind: "none", target: "" }, freshRead: "required",
+        visitDraft: { startDate: "2026-08-31", startTime: "10:00", temporalPhrase: "mañana a las 10:00" },
+        visitTargetSearch: { leadQuery: "Roger Closas", propertyQuery: "calle de Loreto" },
+      },
+    });
+
+    expect(lab.searchLeads).toHaveBeenCalledWith({ query: "Roger Closas", page: 1, limit: 6 });
+    expect(lab.searchProperties).toHaveBeenCalledWith({ query: "calle de Loreto" });
+    expect(lab.post).toHaveBeenCalledWith("/api/v2/ai-interaction/visit-drafts", expect.objectContaining({
+      leadId: "41", propertyId: "865", startDate: "2026-08-31", startTime: "10:00",
+      provenance: { leadEvidenceKey: "e1", propertyEvidenceKey: "e2" },
+    }));
+    expect(result).toMatchObject({ status: "completed", executionKind: "write", entities: [{ id: "41" }, { id: "865" }] });
+  });
+
+  it("asks instead of guessing when a named Visit target is ambiguous", async () => {
+    const lab = connection() as any;
+    lab.searchLeads = vi.fn(async () => ({
+      items: [{ id: "41", client_name: "Roger Closas" }, { id: "42", client_name: "Roger Closas" }],
+      total: 2, page: 1, limit: 6, telemetry: { service: "lead.service.list", latencyMs: 2 },
+    }));
+    lab.searchProperties = vi.fn();
+    lab.post = vi.fn();
+    const result = await lab.prepareVisitDraft({
+      conversationId: "visit-ambiguous-lead", model: "test",
+      evidence: { currentSelection: {}, referencedEntities: [], recentResultEvidence: [], conversationHistory: [], emittedEntityRefs: [], candidateRefs: [], captureStatus: { referenced: "captured", blocks: "captured", prompt: "captured" }, entityIndex: {} },
+      proposal: {
+        intent: "agendar visita", domain: "visits", action: "visits.create_visit.v1", candidateRefs: [],
+        needsClarification: false, clarificationQuestion: "", delegationProposal: { kind: "none", target: "" }, freshRead: "required",
+        visitDraft: { startDate: "2026-08-31", startTime: "10:00", temporalPhrase: "mañana a las 10:00" },
+        visitTargetSearch: { leadQuery: "Roger Closas", propertyQuery: "calle de Loreto" },
+      },
+    });
+
+    expect(result).toMatchObject({ status: "needs_input", entities: [{ id: "41" }, { id: "42" }] });
+    expect(lab.searchProperties).not.toHaveBeenCalled();
+    expect(lab.post).not.toHaveBeenCalled();
+  });
+
   it("executes the selected Lead Skill through the existing Boop Skill lifecycle", async () => {
     const lead = { type: "crm.lead", id: "123", label: "Laura" } as const;
     const lab = connection();

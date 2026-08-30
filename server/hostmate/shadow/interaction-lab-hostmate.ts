@@ -159,6 +159,19 @@ function queryString(values: Record<string, string | number | undefined>): strin
   return query.toString();
 }
 
+function nextEvidenceKey(evidence: ShadowEvidence, additionallyUsed?: string): string {
+  const used = new Set<string>([
+    ...evidence.candidateRefs.map((item) => item.evidenceKey),
+    ...evidence.referencedEntities.map((item) => item.evidenceKey),
+    ...evidence.emittedEntityRefs.map((item) => item.evidenceKey),
+    ...Object.values(evidence.currentSelection).map((item) => item.evidenceKey),
+    ...(additionallyUsed ? [additionallyUsed] : []),
+  ]);
+  let index = 1;
+  while (used.has(`e${index}`)) index += 1;
+  return `e${index}`;
+}
+
 function madridDateKey(offsetDays = 0): string {
   const current = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Europe/Madrid",
@@ -367,9 +380,56 @@ export class InteractionLabHostmateConnection {
     if (!input.proposal.visitDraft) throw new Error("INTERACTION_VISIT_TEMPORAL_REQUIRED");
     const leadProposal = input.proposal.candidateRefs.find((candidate) => candidate.type === "crm.lead");
     const propertyProposal = input.proposal.candidateRefs.find((candidate) => candidate.type === "property.property");
-    const lead = this.authorizedCandidate(input.proposal, input.evidence, ["crm.lead"]);
-    const property = this.authorizedCandidate(input.proposal, input.evidence, ["property.property"]);
-    if (!leadProposal || !propertyProposal) throw new Error("INTERACTION_LAB_AUTHORIZED_TARGET_REQUIRED");
+    let lead = leadProposal ? this.authorizedCandidate(input.proposal, input.evidence, ["crm.lead"]) : null;
+    let property = propertyProposal ? this.authorizedCandidate(input.proposal, input.evidence, ["property.property"]) : null;
+    let leadEvidenceKey = leadProposal?.evidenceKey;
+    let propertyEvidenceKey = propertyProposal?.evidenceKey;
+
+    if (!lead) {
+      const query = input.proposal.visitTargetSearch?.leadQuery;
+      if (!query) throw new Error("INTERACTION_LAB_AUTHORIZED_TARGET_REQUIRED");
+      const result = await this.searchLeads({ query, page: 1, limit: 6 });
+      if (result.total !== 1 || result.items.length !== 1) {
+        const candidates = result.items.map((item) => ({
+          type: "crm.lead", id: String(item.id), label: item.client_name?.trim() || `Lead ${String(item.id)}`,
+        }));
+        return {
+          action: "visits.create_visit.v1", executionKind: "write",
+          summary: result.total === 0
+            ? `No he encontrado ningún lead que coincida con “${query}”. ¿Puedes indicar su nombre, teléfono o email?`
+            : `He encontrado ${result.total} leads que coinciden con “${query}”. ¿Con cuál quieres agendar la visita?`,
+          entities: candidates, status: "needs_input", effectiveInput: { leadQuery: query }, toolCalls: 1, runCount: 0,
+          telemetry: { model: input.model, latencyMs: result.telemetry?.latencyMs ?? 0, inputTokens: 0, outputTokens: 0, costUsd: 0 },
+        };
+      }
+      const item = result.items[0]!;
+      lead = { type: "crm.lead", id: String(item.id), label: item.client_name?.trim() || `Lead ${String(item.id)}` };
+      leadEvidenceKey = nextEvidenceKey(input.evidence);
+    }
+
+    if (!property) {
+      const query = input.proposal.visitTargetSearch?.propertyQuery;
+      if (!query) throw new Error("INTERACTION_LAB_AUTHORIZED_TARGET_REQUIRED");
+      const result = await this.searchProperties({ query });
+      if (result.total !== 1 || result.items.length !== 1) {
+        const candidates = result.items.map((item) => ({
+          type: "property.property", id: item.id, label: item.title,
+        }));
+        return {
+          action: "visits.create_visit.v1", executionKind: "write",
+          summary: result.total === 0
+            ? `No he encontrado ningún inmueble que coincida con “${query}”. ¿Puedes concretar la dirección, título o referencia?`
+            : `He encontrado ${result.total} inmuebles que coinciden con “${query}”. ¿A cuál te refieres?`,
+          entities: candidates, status: "needs_input", effectiveInput: { propertyQuery: query }, toolCalls: 1, runCount: 0,
+          telemetry: { model: input.model, latencyMs: result.telemetry?.latencyMs ?? 0, inputTokens: 0, outputTokens: 0, costUsd: 0 },
+        };
+      }
+      const item = result.items[0]!;
+      property = { type: "property.property", id: item.id, label: item.title, deepLink: `/properties?highlight=${encodeURIComponent(item.id)}` };
+      propertyEvidenceKey = nextEvidenceKey(input.evidence, leadEvidenceKey);
+    }
+
+    if (!leadEvidenceKey || !propertyEvidenceKey) throw new Error("INTERACTION_LAB_AUTHORIZED_TARGET_REQUIRED");
     const payload = await this.post<{ success?: boolean; data?: {
       confirmationToken: string;
       signedIntent: unknown;
@@ -381,7 +441,7 @@ export class InteractionLabHostmateConnection {
       startDate: input.proposal.visitDraft.startDate,
       startTime: input.proposal.visitDraft.startTime,
       temporalPhrase: input.proposal.visitDraft.temporalPhrase,
-      provenance: { leadEvidenceKey: leadProposal.evidenceKey, propertyEvidenceKey: propertyProposal.evidenceKey },
+      provenance: { leadEvidenceKey, propertyEvidenceKey },
     });
     if (!payload.success || !payload.data) {
       const denied = payload.error === "PERMISSION_DENIED";
