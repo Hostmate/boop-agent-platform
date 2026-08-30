@@ -25,6 +25,7 @@ import {
 import {
   createGetVisitTool,
   getVisitInputSchema,
+  toVisitDetailExecutionResult,
   VisitDetailPortError,
   type VisitDetailPort,
 } from "../server/hostmate/product-tools/visits/get-visit.js";
@@ -265,7 +266,28 @@ describe("visits.get_visit.v1 contract", () => {
       lead: { ref: { type: "crm.lead", id: "123", deepLink: "/conversations?leadId=123" } },
       property: { ref: { type: "property.property", id: "55" } },
     });
+    const execution = toVisitDetailExecutionResult(result);
+    expect(execution.summary).toContain("Lead: Juan García");
+    expect(execution.blocks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        items: [expect.objectContaining({
+          fields: expect.arrayContaining([{ label: "Lead", value: "Juan García" }]),
+        })],
+      }),
+    ]));
     expect(JSON.stringify(result)).not.toMatch(/token|google_event|notes|secret|tenant_id|dynamic_answers/);
+  });
+
+  it("does not invent a lead field when the canonical visit has no lead relation", async () => {
+    const port = visitDetailPort({ getVisit: async (_actor, input) => ({
+      ...(await visitDetailPort().getVisit(_actor, input) as any),
+      lead: null,
+    }) });
+    const output = await createGetVisitTool({ port }).handler({ visit: { type: "visits.visit", id: "91" } }, actor()) as any;
+    const execution = toVisitDetailExecutionResult(output);
+
+    expect(execution.summary).not.toContain("Lead:");
+    expect(JSON.stringify(execution.blocks)).not.toContain('"label":"Lead"');
   });
 
   it("returns a discriminated bounded group detail", async () => {

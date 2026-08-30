@@ -263,6 +263,7 @@ export function visitDetailBlocks(output: GetVisitOutput): readonly AgentContent
     ...(output.durationMinutes != null ? [{ label: "Duración", value: `${output.durationMinutes} min` }] : []),
     ...(output.property?.reference ? [{ label: "Referencia", value: output.property.reference }] : []),
     ...(output.property?.address ? [{ label: "Dirección", value: output.property.address }] : []),
+    ...(output.lead?.name ? [{ label: "Lead", value: output.lead.name }] : []),
     ...(output.assignedAgent?.name ? [{ label: "Comercial", value: output.assignedAgent.name }] : []),
     ...(output.kind === "group" ? [
       { label: "Plazas", value: `${output.registration.registeredCount}/${output.registration.capacity}` },
@@ -280,7 +281,7 @@ export function visitDetailBlocks(output: GetVisitOutput): readonly AgentContent
 
 export function toVisitDetailExecutionResult(output: GetVisitOutput): ExecutionResult<GetVisitOutput> {
   const propertyLabel = output.property?.title ?? output.property?.reference;
-  const summary = `${output.kind === "group" ? "Visita grupal" : "Visita"} ${dateTime(output.at, output.timezone)}${propertyLabel ? ` · ${propertyLabel}` : ""} · ${output.status}.`;
+  const summary = `${output.kind === "group" ? "Visita grupal" : "Visita"} ${dateTime(output.at, output.timezone)}${propertyLabel ? ` · ${propertyLabel}` : ""}${output.lead?.name ? ` · Lead: ${output.lead.name}` : ""} · ${output.status}.`;
   const entities = [output.ref, ...(output.lead ? [output.lead.ref] : []), ...(output.property?.ref ? [output.property.ref] : [])];
   return { status: "completed", summary, entities, blocks: visitDetailBlocks(output), data: output, errors: [] };
 }
