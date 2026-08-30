@@ -147,6 +147,24 @@ describe("Interaction → Execution hybrid brief", () => {
     expect(rendered).toContain('"type":"crm.lead"');
   });
 
+  it("selects one unambiguous entity per role from a composed result", () => {
+    const store = new InteractionLabConversationStore();
+    store.getOrHydrate({ conversationId: "conversation-composed-context", scope, history: [] });
+    const lead = { type: "crm.lead", id: "lead-1", label: "Lead Uno" } as const;
+    const property = { type: "property.property", id: "property-1", label: "Piso Centro" } as const;
+
+    store.appendAssistant({
+      conversationId: "conversation-composed-context",
+      content: "Este lead está interesado en este inmueble.",
+      entities: [lead, property],
+    });
+
+    expect(store.messages("conversation-composed-context").at(-1)?.contextRefs).toMatchObject({
+      selected: { lead, property },
+      referenced: [lead, property],
+    });
+  });
+
   it("fails closed if a conversation id is reused across actor scope", () => {
     const store = new InteractionLabConversationStore();
     store.getOrHydrate({ conversationId: "conversation-3", scope, history: [] });

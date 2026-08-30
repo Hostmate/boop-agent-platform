@@ -6,6 +6,7 @@ import {
   LeadContextPortError,
   createCrmGetLeadContextTool,
   crmGetLeadContextInputSchema,
+  toCrmLeadContextExecutionResult,
   type LeadContextPort,
 } from "../server/hostmate/product-tools/crm/get-lead-context.js";
 import {
@@ -192,8 +193,15 @@ describe("crm.get_lead_context.v1 contract", () => {
         name: "Juan García", phone: "••• •• 3456", email: "j•••@example.com",
         ref: { type: "crm.lead", id: "123", deepLink: "/conversations?leadId=123" },
       },
-      property: { title: "Ático Centro" }, pendingTasks: [{ title: "Llamar" }],
+      property: {
+        title: "Ático Centro",
+        ref: { type: "property.property", id: "55", deepLink: "/properties?highlight=55" },
+      }, pendingTasks: [{ title: "Llamar" }],
     });
+    expect(toCrmLeadContextExecutionResult(result).entities).toEqual([
+      expect.objectContaining({ type: "crm.lead", id: "123" }),
+      expect.objectContaining({ type: "property.property", id: "55" }),
+    ]);
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain("tenantId");
     expect(serialized).not.toContain("tenant_id");
@@ -587,8 +595,10 @@ describe("crm.search_leads vertical slice", () => {
     const selected = await slice.execute(actor(), { conversationId, message: "El segundo" });
     const followUp = await slice.execute(actor(), { conversationId, message: "¿Qué sabemos de él?" });
     const visitFollowUp = await slice.execute(actor(), { conversationId, message: "¿Qué visitas tiene?" });
-    expect(selected.result).toMatchObject({ status: "completed", entities: [{ id: "2" }] });
-    expect(followUp.result).toMatchObject({ status: "completed", entities: [{ id: "2" }] });
+    expect(selected.result.status).toBe("completed");
+    expect(selected.result.entities).toEqual(expect.arrayContaining([expect.objectContaining({ type: "crm.lead", id: "2" })]));
+    expect(followUp.result.status).toBe("completed");
+    expect(followUp.result.entities).toEqual(expect.arrayContaining([expect.objectContaining({ type: "crm.lead", id: "2" })]));
     expect(visitFollowUp.result).toMatchObject({ status: "completed", data: { visits: { lead: { ref: { id: "2" } } } } });
     expect(search.search).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledTimes(1);

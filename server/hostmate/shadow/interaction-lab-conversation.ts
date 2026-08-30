@@ -87,9 +87,9 @@ export class InteractionLabConversationStore {
     const before = this.latestContext(stored.messages);
     const entities = input.entities ?? [];
     const selected = { ...before.selected };
-    if (entities.length === 1) {
-      const role = roleFor(entities[0]!);
-      if (role) selected[role] = entities[0];
+    for (const role of ["lead", "property", "visit"] as const) {
+      const candidates = uniqueRefs(entities.filter((entity) => roleFor(entity) === role));
+      if (candidates.length === 1) selected[role] = candidates[0];
     }
     const contextRefs: ConversationContextRefs = {
       selected,

@@ -13,6 +13,11 @@ const crmLeadRefSchema = entityRefSchema.extend({
   id: z.string().regex(/^[1-9]\d*$/).max(20),
 }).strict();
 
+const propertyRefSchema = entityRefSchema.extend({
+  type: z.literal("property.property"),
+  id: z.string().regex(/^[1-9]\d*$/).max(20),
+}).strict();
+
 export const crmGetLeadContextInputShape = {
   lead: crmLeadRefSchema.describe("Referencia crm.lead ya resuelta. No busques de nuevo por nombre."),
 } satisfies z.ZodRawShape;
@@ -56,7 +61,7 @@ export const crmGetLeadContextOutputSchema = z.object({
     qualification: z.object({ grade: z.string().max(40).optional(), score: z.number().finite().optional() }).strict().optional(),
   }).strict(),
   assignedAgent: z.object({ name: z.string().max(160).optional() }).strict().optional(),
-  property: z.object({ title: z.string().max(240).optional(), reference: z.string().max(100).optional(), address: z.string().max(300).optional(), price: z.number().finite().optional(), status: z.string().max(80).optional() }).strict().optional(),
+  property: z.object({ ref: propertyRefSchema, title: z.string().max(240).optional(), reference: z.string().max(100).optional(), address: z.string().max(300).optional(), price: z.number().finite().optional(), status: z.string().max(80).optional() }).strict().optional(),
   opportunity: z.object({ status: z.string().max(80).optional(), propertyTitle: z.string().max(240).optional(), propertyReference: z.string().max(100).optional(), price: z.number().finite().optional(), createdAt: z.string().datetime().optional() }).strict().optional(),
   activeDemand: z.object({ operationType: z.string().max(80).optional(), propertySubtype: z.string().max(80).optional(), city: z.string().max(100).optional(), zone: z.string().max(160).optional(), priceMax: z.number().finite().optional(), roomsMin: z.number().finite().optional(), bathroomsMin: z.number().finite().optional(), areaMin: z.number().finite().optional() }).strict().optional(),
   nextVisit: z.object({ at: z.string().datetime(), status: z.string().max(80), propertyReference: z.string().max(100).optional(), assignedAgent: z.string().max(160).optional() }).strict().optional(),
@@ -108,6 +113,12 @@ function sanitize(input: LeadContextServiceResult, requestedRef: EntityRef): Crm
     },
     assignedAgent: input.assignedAgent ? { name: present(input.assignedAgent.name) } : undefined,
     property: input.property ? {
+      ref: {
+        type: "property.property",
+        id: String(input.property.id),
+        label: present(input.property.title) ?? present(input.property.reference) ?? `Inmueble ${input.property.id}`,
+        deepLink: `/properties?highlight=${encodeURIComponent(input.property.id)}`,
+      },
       title: present(input.property.title), reference: present(input.property.reference), address: present(input.property.address),
       price: num(input.property.price), status: present(input.property.status),
     } : undefined,
@@ -191,6 +202,6 @@ export function toCrmLeadContextExecutionResult(output: CrmGetLeadContextOutput)
   return {
     status: "completed",
     summary: parts.length ? `${output.lead.name}: ${parts.join("; ")}.` : `${output.lead.name}: no hay más contexto operativo resumido.`,
-    entities: [output.lead.ref], data: output, blocks: contextBlock(output), errors: [],
+    entities: [output.lead.ref, ...(output.property ? [output.property.ref] : [])], data: output, blocks: contextBlock(output), errors: [],
   };
 }
