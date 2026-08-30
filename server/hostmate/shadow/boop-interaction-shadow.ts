@@ -41,6 +41,42 @@ const SHADOW_ACTIONS = [
   "unsupported",
 ] as const;
 
+const semanticCandidateShape = z.object({
+  evidenceKey: z.string().trim().min(1),
+  type: z.string().trim().min(1),
+}).strict();
+
+const visitDraftShape = z.object({
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  startTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
+  temporalPhrase: z.string().trim().min(1).max(160),
+}).strict();
+
+const targetSearchShape = z.object({
+  leadQuery: z.string().trim().min(2).max(120).nullable(),
+  propertyQuery: z.string().trim().min(2).max(120).nullable(),
+}).strict();
+
+/**
+ * Minimal semantic decision requested from the Interaction LLM.
+ *
+ * Catalog metadata (domain, delegation and fresh-read policy) is deliberately
+ * absent: it is derived from the selected action. Search hints also have one
+ * representation, avoiding the former visit/property duplicate fields.
+ */
+export const conversationDecisionShape = {
+  intent: z.string().trim().min(1),
+  action: z.enum(SHADOW_ACTIONS),
+  candidateRefs: z.array(semanticCandidateShape),
+  needsClarification: z.boolean(),
+  clarificationQuestion: z.string().trim(),
+  targetSearch: targetSearchShape.nullable().default(null),
+  visitDraft: visitDraftShape.nullable().default(null),
+} satisfies z.ZodRawShape;
+
+export const conversationDecisionSchema = z.object(conversationDecisionShape).strict();
+export type ConversationDecision = z.infer<typeof conversationDecisionSchema>;
+
 export const conversationProposalShape = {
   // The shadow records the model's interpretation verbatim. Do not make a
   // verbose but otherwise valid proposal fail merely because the harness
@@ -48,10 +84,7 @@ export const conversationProposalShape = {
   intent: z.string().trim().min(1),
   domain: z.enum(["crm", "property", "visits", "tasks", "memory", "unknown"]),
   action: z.enum(SHADOW_ACTIONS),
-  candidateRefs: z.array(z.object({
-    evidenceKey: z.string().trim().min(1),
-    type: z.string().trim().min(1),
-  }).strict()),
+  candidateRefs: z.array(semanticCandidateShape),
   needsClarification: z.boolean(),
   clarificationQuestion: z.string().trim(),
   delegationProposal: z.object({
@@ -59,15 +92,8 @@ export const conversationProposalShape = {
     target: z.string().trim(),
   }).strict(),
   freshRead: z.enum(["required", "not_required"]),
-  visitDraft: z.object({
-    startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    startTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
-    temporalPhrase: z.string().trim().min(1).max(160),
-  }).strict().nullable().default(null),
-  visitTargetSearch: z.object({
-    leadQuery: z.string().trim().min(2).max(120).nullable(),
-    propertyQuery: z.string().trim().min(2).max(120).nullable(),
-  }).strict().nullable().default(null),
+  visitDraft: visitDraftShape.nullable().default(null),
+  visitTargetSearch: targetSearchShape.nullable().default(null),
   propertyTargetSearch: z.object({
     query: z.string().trim().min(2).max(120),
   }).strict().nullable().default(null),
@@ -124,6 +150,29 @@ export const conversationProposalSchema = z.object(conversationProposalShape).st
   }
 });
 export type ConversationProposal = z.infer<typeof conversationProposalSchema>;
+
+export function enrichConversationProposal(decision: ConversationDecision): ConversationProposal {
+  const hasCatalogAction = decision.action !== "needs_clarification" && decision.action !== "unsupported";
+  const action = hasCatalogAction ? decision.action as HostmateInteractionAction : null;
+  const domain = action ? interactionDefinition(action).domain : "unknown";
+  const delegationProposal = action ? expectedDelegationFor(action) : { kind: "none" as const, target: "" as const };
+
+  return conversationProposalSchema.parse({
+    intent: decision.intent,
+    domain,
+    action: decision.action,
+    candidateRefs: decision.candidateRefs,
+    needsClarification: decision.needsClarification,
+    clarificationQuestion: decision.clarificationQuestion,
+    delegationProposal,
+    freshRead: action ? "required" : "not_required",
+    visitDraft: decision.action === "visits.create_visit.v1" ? decision.visitDraft : null,
+    visitTargetSearch: decision.action === "visits.create_visit.v1" ? decision.targetSearch : null,
+    propertyTargetSearch: decision.action === "property.search_properties.v1" && decision.targetSearch?.propertyQuery
+      ? { query: decision.targetSearch.propertyQuery }
+      : null,
+  });
+}
 
 export type ShadowEvidenceItem = CanonicalEvidenceEntity;
 
@@ -209,7 +258,7 @@ export type BoopInteractionShadowResult = Readonly<{
   error?: Readonly<{ code: string; message: string }>;
 }>;
 
-export const BOOP_INTERACTION_SHADOW_CONTRACT_VERSION = 9 as const;
+export const BOOP_INTERACTION_SHADOW_CONTRACT_VERSION = 10 as const;
 
 export const BOOP_INTERACTION_SHADOW_CONTRACT = `
 You are a proposal-only Boop Interaction shadow. Call the inert
@@ -225,11 +274,11 @@ OUTPUT CONTRACT
 - Preserve the current user's language in intent and clarificationQuestion. If the message is Spanish, write them in Spanish; never English.
 - action is one available capability/orchestration target, needs_clarification or unsupported.
 - A task read is unsupported because no task-read action exists; tasks.create_task.v1 only prepares a new task.
-- delegationProposal uses kind=skill for a Skill, multi_agent for Multi-Agent, otherwise none. target equals action except for none, whose target is empty.
-- freshRead=required for current Product Data. Context selects an entity but never replaces the read.
+- Return only semantic choices. Hostmate derives domain, delegation and fresh-read policy from action; do not output those catalog fields.
 - A direct single-entity read uses exactly one item: the primary entity.
-- visitDraft and visitTargetSearch exist only for visits.create_visit.v1. Require exact Europe/Madrid date+time; never infer a missing hour. A named person is the Lead, while the commercial is the authenticated actor.
-- Property discovery ("busca pisos con terraza") uses property.search_properties.v1 with propertyTargetSearch=null. Concrete identification without evidence ("cuánto cuesta el piso de Bonavista") uses the same action plus propertyTargetSearch={query:"Bonavista"}.
+- targetSearch is the single optional block for unresolved named targets. It has leadQuery and propertyQuery; use null for either target already present in candidateRefs.
+- visitDraft exists only for visits.create_visit.v1. Require exact Europe/Madrid date+time; never infer a missing hour. A named person is the Lead, while the commercial is the authenticated actor.
+- Property discovery ("busca pisos con terraza") uses property.search_properties.v1 with targetSearch=null. Concrete identification without evidence ("cuánto cuesta el piso de Bonavista") uses the same action plus targetSearch={leadQuery:null,propertyQuery:"Bonavista"}.
 - A Property already present in evidence uses property.get_property.v1 with its candidate. For ordinals, never launch a new search to manufacture context.
 - A descriptive Property clue selects known evidence only when exactly one candidate matches. If several share it, clarify. Candidate order applies only to explicit ordinals; active focus only to "este"/"ese".
 - "otro" never means "anterior": select only when exactly one alternative of the required type exists. With two or more alternatives, clarify; never repeat the active property.
@@ -241,11 +290,11 @@ GUIDE EXAMPLES
 3. No relevant list + "Enséñame el segundo inmueble" -> needs_clarification; never run an unfiltered search.
 4. Three known Properties A/B/C with C active + "No, el otro piso" -> needs_clarification because two alternatives remain. Select only when there is exactly one alternative.
 5. Older selected Property A + latest result "No he encontrado ningún inmueble en Girona" + "¿Y ese piso?" -> needs_clarification; never fall back to A.
-6. "¿Qué tareas pendientes tengo?" -> domain=tasks; action=unsupported.
+6. "¿Qué tareas pendientes tengo?" -> action=unsupported.
 7. Known Lead+Property + "Agenda una visita mañana a las 17:00" -> visits.create_visit.v1 with both candidates and exact visitDraft.
-8. No known targets + "Agenda una visita mañana a las 10:00 para el piso en calle de Loreto con Roger Closas" -> visitTargetSearch for both targets; Roger Closas is the lead.
+8. No known targets + "Agenda una visita mañana a las 10:00 para el piso en calle de Loreto con Roger Closas" -> one targetSearch with both queries; Roger Closas is the lead.
 9. "Agenda una visita mañana por la tarde" -> needs_clarification.
-10. No Property evidence + "¿Cuánto costaba el piso de Bonavista?" -> property.search_properties.v1 with propertyTargetSearch={query:"Bonavista"}.
+10. No Property evidence + "¿Cuánto costaba el piso de Bonavista?" -> property.search_properties.v1 with targetSearch={leadQuery:null,propertyQuery:"Bonavista"}.
 11. Two known Comte d'Urgell Properties + "el piso de Comte d'Urgell" -> needs_clarification; never pick the first.
 `;
 
@@ -310,9 +359,10 @@ function proposalTool(onProposal: (proposal: ConversationProposal) => void) {
     "boop-shadow",
     "propose_conversation",
     "Record one proposal-only conversational interpretation for a shadow comparison. This tool has no side effects.",
-    conversationProposalShape,
+    conversationDecisionShape,
     async (args) => {
-      const proposal = conversationProposalSchema.parse(args);
+      const decision = conversationDecisionSchema.parse(args);
+      const proposal = enrichConversationProposal(decision);
       onProposal(proposal);
       return runtimeText("Proposal recorded. No tools, writes, drafts or agents were executed.");
     },

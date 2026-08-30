@@ -8,7 +8,7 @@ import {
 
 describe("Hostmate Interaction Pareto prompt", () => {
   it("contains the frozen capability surface and the authority boundary", () => {
-    expect(HOSTMATE_INTERACTION_PROMPT_VERSION).toBe(9);
+    expect(HOSTMATE_INTERACTION_PROMPT_VERSION).toBe(10);
     expect(HOSTMATE_INTERACTION_CAPABILITIES).toHaveLength(15);
     expect(HOSTMATE_INTERACTION_ORCHESTRATION_TARGETS).toEqual(["multi-agent.lead-opportunity-analysis.v1"]);
     for (const capability of HOSTMATE_INTERACTION_CAPABILITIES) expect(HOSTMATE_INTERACTION_SYSTEM).toContain(capability);
@@ -24,6 +24,9 @@ describe("Hostmate Interaction Pareto prompt", () => {
     expect(HOSTMATE_INTERACTION_SYSTEM).toContain('"Prepárame la segunda visita" means skill.prepare-visit-brief.v1');
     expect(HOSTMATE_INTERACTION_SYSTEM).toContain('"Prepárame este lead antes de llamarlo" means skill.prepare-lead-brief.v1');
     expect(HOSTMATE_INTERACTION_SYSTEM).toContain("named natural person is the Lead/client");
+    expect(HOSTMATE_INTERACTION_SYSTEM).toContain("single targetSearch block");
+    expect(HOSTMATE_INTERACTION_SYSTEM).not.toContain("visitTargetSearch");
+    expect(HOSTMATE_INTERACTION_SYSTEM).not.toContain("propertyTargetSearch");
   });
 
   it("removes unrelated personal-Boop integrations and stays compact", () => {

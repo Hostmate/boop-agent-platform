@@ -44,6 +44,25 @@ export function isInteractionActionAllowed(action: string, allowedActions?: Read
   return !allowedActions || action === "needs_clarification" || action === "unsupported" || allowedActions.has(action);
 }
 
+export function interactionLabProposalFailure(errorCode?: string): Readonly<{
+  status: 422 | 502;
+  error: "LAB_PROPOSAL_INVALID" | "LAB_PROPOSAL_UNAVAILABLE";
+  message: string;
+}> {
+  if (errorCode === "INVALID_TOOL_CALL") {
+    return {
+      status: 422,
+      error: "LAB_PROPOSAL_INVALID",
+      message: "No he podido interpretar esta petición con suficiente seguridad. Prueba a expresarla de otra forma.",
+    };
+  }
+  return {
+    status: 502,
+    error: "LAB_PROPOSAL_UNAVAILABLE",
+    message: "El agente no ha podido completar esta respuesta. Inténtalo de nuevo.",
+  };
+}
+
 export function createInteractionLabRouter(
   connection?: InteractionLabHostmateConnection,
   options: Readonly<{
@@ -124,10 +143,8 @@ export function createInteractionLabRouter(
     });
 
     if (result.proposalStatus !== "captured" || !result.proposal) {
-      res.status(502).json({
-        error: result.error?.code ?? "LAB_PROPOSAL_UNAVAILABLE",
-        message: "El agente no ha podido completar esta respuesta. Inténtalo de nuevo.",
-      });
+      const failure = interactionLabProposalFailure(result.error?.code);
+      res.status(failure.status).json({ error: failure.error, message: failure.message });
       return;
     }
 

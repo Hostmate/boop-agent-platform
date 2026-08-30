@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { interactionLabReply, isInteractionActionAllowed } from "../server/hostmate/shadow/interaction-lab-route.js";
+import {
+  interactionLabProposalFailure,
+  interactionLabReply,
+  isInteractionActionAllowed,
+} from "../server/hostmate/shadow/interaction-lab-route.js";
 import { InteractionLabHostmateConnection } from "../server/hostmate/shadow/interaction-lab-hostmate.js";
 import type { ConversationProposal } from "../server/hostmate/shadow/boop-interaction-shadow.js";
 
@@ -36,6 +40,15 @@ describe("Interaction Lab", () => {
     expect(interactionLabReply(null)).toBe(
       "No he podido interpretar este mensaje. Puedes probar a expresarlo de otra forma.",
     );
+  });
+
+  it("surfaces an invalid model proposal as safe JSON instead of a proxy 502", () => {
+    expect(interactionLabProposalFailure("INVALID_TOOL_CALL")).toEqual({
+      status: 422,
+      error: "LAB_PROPOSAL_INVALID",
+      message: "No he podido interpretar esta petición con suficiente seguridad. Prueba a expresarla de otra forma.",
+    });
+    expect(interactionLabProposalFailure("PROVIDER_UNAVAILABLE").status).toBe(502);
   });
 
   it("fails closed outside the production read-only action set", () => {
