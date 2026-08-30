@@ -230,6 +230,92 @@ describe("Interaction Lab composite execution", () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
+  it("uses the shared Eva+LLM grounding path for a concrete Property read", async () => {
+    const lab = connection() as any;
+    const loreto = {
+      id: "865", reference: "LORETO", title: "Piso en calle de Loreto", address: "Calle de Loreto 10",
+      neighborhood: "Les Corts", city: "Barcelona", price: 400000, rooms: 3, bathrooms: 2,
+      areaBuilt: 90, propertySubtype: "piso", character: null, descriptionExcerpt: null,
+    };
+    lab.searchConcretePropertyCandidates = vi.fn(async () => ({ query: "calle de Loreto", items: [loreto], total: 1, latencyMs: 3 }));
+    lab.resolveConcretePropertyCandidate = vi.fn(async () => ({
+      outcome: "selected", candidate: loreto, model: "test", latencyMs: 4,
+      inputTokens: 100, outputTokens: 10, costUsd: 0.001,
+    }));
+    lab.getPropertyDetail = vi.fn(async () => ({
+      id: "865", reference: "LORETO", title: "Piso en calle de Loreto", operation: "comprar",
+      propertyType: "piso", status: "activo", price: 400000, currency: "EUR",
+      location: { city: "Barcelona", neighborhood: "Les Corts", province: "Barcelona" },
+      specifications: {
+        rooms: 3, bathrooms: 2, areaBuilt: 90, areaUseful: 80, plotArea: null, floor: "2",
+        yearBuilt: null, ceilingHeight: null, loadingDocks: null, powerSupplyKw: null,
+        officeArea: null, storefrontCount: null, grossYieldPct: null,
+      },
+      features: ["terraza"], description: null, publicNotes: null, images: [], associatedAgents: [],
+      telemetry: { services: ["property.service.getById"], latencyMs: 2 },
+    }));
+    const emptyEvidence: ShadowEvidence = {
+      currentSelection: {}, referencedEntities: [], recentResultEvidence: [], conversationHistory: [],
+      emittedEntityRefs: [], candidateRefs: [], captureStatus: { referenced: "captured", blocks: "captured", prompt: "captured" }, entityIndex: {},
+    };
+
+    const result = await lab.executeRead({
+      conversationId: "property-concrete-read",
+      message: "¿Cuánto cuesta el piso en calle de Loreto?",
+      evidence: emptyEvidence,
+      priorMessages: [], openRouterApiKey: "test", model: "test", reasoningEffort: "none",
+      proposal: {
+        intent: "consultar el piso de Loreto", domain: "property", action: "property.search_properties.v1",
+        candidateRefs: [], needsClarification: false, clarificationQuestion: "",
+        delegationProposal: { kind: "none", target: "" }, freshRead: "required",
+        propertyTargetSearch: { query: "calle de Loreto" },
+      },
+    });
+
+    expect(result).toMatchObject({
+      action: "property.get_property.v1", status: "completed", entities: [{ id: "865" }],
+      blocks: [{ type: "entity_detail", ref: { id: "865" } }], toolCalls: 2, runCount: 2,
+    });
+    expect(lab.searchConcretePropertyCandidates).toHaveBeenCalledWith("calle de Loreto");
+    expect(lab.getPropertyDetail).toHaveBeenCalledWith("865");
+  });
+
+  it("keeps ambiguous concrete Property reads as ordered conversational evidence", async () => {
+    const lab = connection() as any;
+    const candidates = [
+      { id: "865", reference: "BONA-3", title: "Bonavista 3 habitaciones", address: "Carrer Bonavista 1", neighborhood: "Gràcia", city: "Barcelona", price: 450000, rooms: 3, bathrooms: 2, areaBuilt: 90, propertySubtype: "piso", character: null, descriptionExcerpt: null },
+      { id: "866", reference: "BONA-4", title: "Bonavista 4 habitaciones", address: "Carrer Bonavista 8", neighborhood: "Gràcia", city: "Barcelona", price: 520000, rooms: 4, bathrooms: 2, areaBuilt: 115, propertySubtype: "piso", character: null, descriptionExcerpt: null },
+    ];
+    lab.searchConcretePropertyCandidates = vi.fn(async () => ({ query: "Bonavista", items: candidates, total: 2, latencyMs: 3 }));
+    lab.resolveConcretePropertyCandidate = vi.fn(async () => ({
+      outcome: "needs_input", question: "¿Te refieres al de 3 habitaciones o al de 4?",
+      model: "test", latencyMs: 4, inputTokens: 100, outputTokens: 10, costUsd: 0.001,
+    }));
+    lab.getPropertyDetail = vi.fn();
+    const emptyEvidence: ShadowEvidence = {
+      currentSelection: {}, referencedEntities: [], recentResultEvidence: [], conversationHistory: [],
+      emittedEntityRefs: [], candidateRefs: [], captureStatus: { referenced: "captured", blocks: "captured", prompt: "captured" }, entityIndex: {},
+    };
+
+    const result = await lab.executeRead({
+      conversationId: "property-ambiguous-read", message: "¿Cuánto cuesta el piso de Bonavista?",
+      evidence: emptyEvidence, priorMessages: [], openRouterApiKey: "test", model: "test", reasoningEffort: "none",
+      proposal: {
+        intent: "consultar Bonavista", domain: "property", action: "property.search_properties.v1",
+        candidateRefs: [], needsClarification: false, clarificationQuestion: "",
+        delegationProposal: { kind: "none", target: "" }, freshRead: "required",
+        propertyTargetSearch: { query: "Bonavista" },
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "needs_input", summary: "¿Te refieres al de 3 habitaciones o al de 4?",
+      blocks: [{ type: "entity_list", items: [{ ref: { id: "865" } }, { ref: { id: "866" } }] }],
+      entities: [{ id: "865" }, { id: "866" }],
+    });
+    expect(lab.getPropertyDetail).not.toHaveBeenCalled();
+  });
+
   it("executes the selected Lead Skill through the existing Boop Skill lifecycle", async () => {
     const lead = { type: "crm.lead", id: "123", label: "Laura" } as const;
     const lab = connection();

@@ -68,6 +68,9 @@ export const conversationProposalShape = {
     leadQuery: z.string().trim().min(2).max(120).nullable(),
     propertyQuery: z.string().trim().min(2).max(120).nullable(),
   }).strict().nullable().default(null),
+  propertyTargetSearch: z.object({
+    query: z.string().trim().min(2).max(120),
+  }).strict().nullable().default(null),
 } satisfies z.ZodRawShape;
 
 export const conversationProposalSchema = z.object(conversationProposalShape).strict().superRefine((value, context) => {
@@ -111,6 +114,13 @@ export const conversationProposalSchema = z.object(conversationProposalShape).st
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["visitDraft"], message: "visitDraft is only valid for Create Visit" });
   } else if (value.visitTargetSearch !== null) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["visitTargetSearch"], message: "visitTargetSearch is only valid for Create Visit" });
+  }
+  if (value.action === "property.search_properties.v1") {
+    if (value.propertyTargetSearch && value.candidateRefs.some((candidate) => candidate.type === "property.property")) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["propertyTargetSearch"], message: "A concrete Property lookup must use either known evidence or a target search, never both" });
+    }
+  } else if (value.propertyTargetSearch !== null) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["propertyTargetSearch"], message: "propertyTargetSearch is only valid for Property search" });
   }
 });
 export type ConversationProposal = z.infer<typeof conversationProposalSchema>;
@@ -199,53 +209,42 @@ export type BoopInteractionShadowResult = Readonly<{
   error?: Readonly<{ code: string; message: string }>;
 }>;
 
-export const BOOP_INTERACTION_SHADOW_CONTRACT_VERSION = 5 as const;
+export const BOOP_INTERACTION_SHADOW_CONTRACT_VERSION = 8 as const;
 
 export const BOOP_INTERACTION_SHADOW_CONTRACT = `
-You are running as a proposal-only Boop Interaction shadow. The real Boop
-dispatcher system above remains authoritative for conversational style and
-interpretation, but this run has exactly one inert tool:
-boop-shadow.propose_conversation.
+You are a proposal-only Boop Interaction shadow. Call the inert
+boop-shadow.propose_conversation tool exactly once. Do not execute, simulate,
+confirm or describe Tools, Skills, Writes, Drafts, Memory or child agents.
 
-Call that tool exactly once. Never attempt to execute, simulate, confirm or
-describe a Product Tool, Skill, Write, Draft, Memory mutation or child agent.
-Return a proposal only. candidateRefs must use evidenceKey values present in
-the supplied conversational evidence. A candidateRef is not an authorityRef:
-do not invent IDs, tenant values, permissions, ToolScope, confirmation or
-commit authorization. If evidence is insufficient or conflicting, set
-needsClarification=true and ask a discriminating question instead of guessing.
+candidateRefs may only use supplied evidenceKey values. They are evidence, not
+authority: never invent IDs, tenant, permissions, ToolScope or confirmation.
+When evidence is insufficient or conflicting, clarify instead of guessing.
 ${ORDERED_CONTEXT_INTERPRETATION_GUIDE}
 
 OUTPUT CONTRACT
-- LANGUAGE: intent and clarificationQuestion must use the language of the current user message. If the message is Spanish, write them in Spanish. Do not translate or default to English. Canonical action IDs and evidence keys remain unchanged.
-- action must be exactly one available capability, one existing orchestration target, needs_clarification, or unsupported.
-- tasks.create_task.v1 only prepares a new task. A request to list, search or inspect existing/pending tasks must use action=unsupported because no task-read action exists. Never invent a task action.
-- delegationProposal is {kind:"skill", target:action} for a Skill, {kind:"multi_agent", target:action} for Multi-Agent, and {kind:"none", target:""} otherwise.
-- freshRead=required when current Product Data must be read to answer or execute safely. Context selects the entity; it does not replace a current domain read.
-- visitDraft is non-null only for visits.create_visit.v1. It contains the exact Europe/Madrid calendar date (YYYY-MM-DD), exact 24-hour time (HH:mm), and the user's temporal phrase. Never infer a missing time.
-- visitTargetSearch is non-null only for visits.create_visit.v1. For each target not already present as one candidateRef, provide the user's concise natural-language lead/property search text. This requests a tenant-scoped canonical search; it does not select or authorize a result.
-- In a visit request, a named natural person is the lead/client unless the user explicitly says they are changing the assigned commercial. The commercial is always the authenticated actor and must never be inferred from a person's name in the request. Explicit reassignment is unsupported in Create Visit V1.
-- visits.create_visit.v1 requires each target either as one authorized candidateRef or as one visitTargetSearch query. Hostmate will clarify if a canonical search returns zero or multiple candidates; never guess.
-- For a direct single-entity read, candidateRefs contains exactly one item: the primary entity. Include related candidates only when the proposed Skill or Multi-Agent objective actually needs them.
-- If needsClarification=true, action=needs_clarification and clarificationQuestion asks the smallest useful discriminating question.
-- The immediately previous result governs pronouns. If it says the entity does not exist, never fall back to an older selected or related entity; clarify.
+- Preserve the current user's language in intent and clarificationQuestion. If the message is Spanish, write them in Spanish; never English.
+- action is one available capability/orchestration target, needs_clarification or unsupported.
+- A task read is unsupported because no task-read action exists; tasks.create_task.v1 only prepares a new task.
+- delegationProposal uses kind=skill for a Skill, multi_agent for Multi-Agent, otherwise none. target equals action except for none, whose target is empty.
+- freshRead=required for current Product Data. Context selects an entity but never replaces the read.
+- A direct single-entity read uses exactly one item: the primary entity.
+- visitDraft and visitTargetSearch exist only for visits.create_visit.v1. Require exact Europe/Madrid date+time; never infer a missing hour. A named person is the Lead, while the commercial is the authenticated actor.
+- Property discovery ("busca pisos con terraza") uses property.search_properties.v1 with propertyTargetSearch=null. Concrete identification without evidence ("cuánto cuesta el piso de Bonavista") uses the same action plus propertyTargetSearch={query:"Bonavista"}.
+- A Property already present in evidence uses property.get_property.v1 with its candidate. For ordinals, never launch a new search to manufacture context.
+- "otro" never means "anterior": select only when exactly one alternative of the required type exists. With two or more alternatives, clarify; never repeat the active property.
+- If needsClarification=true, action=needs_clarification and ask the smallest discriminating question. The latest result governs pronouns; never fall back past an explicit no-result.
 
 GUIDE EXAMPLES
-1. "Prepare this lead for my next conversation" with one selected lead -> action=skill.prepare-lead-brief.v1; delegation={kind:"skill",target:"skill.prepare-lead-brief.v1"}; primary candidate=that lead.
-2. "Analyse this lead, its upcoming visits and matching properties" -> action=multi-agent.lead-opportunity-analysis.v1; delegation={kind:"multi_agent",target:"multi-agent.lead-opportunity-analysis.v1"}; primary candidate=the lead.
-3. "What do we currently know about this lead?" -> action=crm.get_lead_context.v1; delegation={kind:"none",target:""}; freshRead=required.
-4. "Tell me about the other property" with several plausible properties and no unique correction target -> action=needs_clarification; needsClarification=true; ask which property using known distinguishing labels.
-5. "No, el anterior/otro" without one unique alternative -> needs_clarification; never repeat the active property.
-6. "¿Qué tareas pendientes tengo?" -> domain=tasks; action=unsupported; candidateRefs=[]; needsClarification=false. Never invent a task-read action.
-7. "El lead no tiene visitas próximas" + "¿De qué inmueble se trata?" -> needs_clarification; never use its interested property.
-8. With one known Lead and one known Property, "Agenda una visita mañana a las 17:00" -> visits.create_visit.v1, both candidates, visitTargetSearch=null, and visitDraft with the exact date and 17:00. It prepares a Draft only.
-9. "Agenda una visita mañana a las 10:00 para el piso en calle de Loreto con Roger Closas" with neither entity in evidence -> visits.create_visit.v1; candidateRefs=[]; visitTargetSearch={leadQuery:"Roger Closas",propertyQuery:"calle de Loreto"}; visitDraft has the exact date and 10:00. Roger Closas is the lead, never the authenticated commercial.
-10. "Agenda una visita mañana por la tarde" -> needs_clarification because the hour is not exact; visitDraft=null; visitTargetSearch=null.
-
-LANGUAGE EXAMPLE
-"Hola" -> any user-facing text in the proposal is Spanish, for example "¡Hola! ¿En qué puedo ayudarte?", never English.
-
-The Hostmate Authority Gate will validate every candidate after this shadow.
+1. Selected lead + "Prepare this lead" -> skill.prepare-lead-brief.v1.
+2. Lead + coordinated lead/visits/properties analysis -> multi-agent.lead-opportunity-analysis.v1.
+3. No relevant list + "Enséñame el segundo inmueble" -> needs_clarification; never run an unfiltered search.
+4. Three known Properties A/B/C with C active + "No, el otro piso" -> needs_clarification because two alternatives remain. Select only when there is exactly one alternative.
+5. Older selected Property A + latest result "No he encontrado ningún inmueble en Girona" + "¿Y ese piso?" -> needs_clarification; never fall back to A.
+6. "¿Qué tareas pendientes tengo?" -> domain=tasks; action=unsupported.
+7. Known Lead+Property + "Agenda una visita mañana a las 17:00" -> visits.create_visit.v1 with both candidates and exact visitDraft.
+8. No known targets + "Agenda una visita mañana a las 10:00 para el piso en calle de Loreto con Roger Closas" -> visitTargetSearch for both targets; Roger Closas is the lead.
+9. "Agenda una visita mañana por la tarde" -> needs_clarification.
+10. No Property evidence + "¿Cuánto costaba el piso de Bonavista?" -> property.search_properties.v1 with propertyTargetSearch={query:"Bonavista"}.
 `;
 
 const OPAQUE_EVIDENCE_KEY = /^e[1-9][0-9]*$/;

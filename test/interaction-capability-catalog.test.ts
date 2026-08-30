@@ -91,4 +91,36 @@ describe("Interaction capability catalog", () => {
       visitTargetSearch: { leadQuery: "Roger Closas", propertyQuery: "calle de Loreto" },
     }).success).toBe(true);
   });
+
+  it("distinguishes Property discovery from concrete candidate retrieval without adding a capability", () => {
+    const base = {
+      intent: "consultar el piso de Bonavista",
+      domain: "property" as const,
+      action: "property.search_properties.v1" as const,
+      candidateRefs: [],
+      needsClarification: false,
+      clarificationQuestion: "",
+      delegationProposal: { kind: "none" as const, target: "" },
+      freshRead: "required" as const,
+    };
+    expect(conversationProposalSchema.safeParse({
+      ...base,
+      propertyTargetSearch: { query: "Bonavista" },
+    }).success).toBe(true);
+    expect(conversationProposalSchema.safeParse({
+      ...base,
+      propertyTargetSearch: null,
+    }).success).toBe(true);
+    expect(conversationProposalSchema.safeParse({
+      ...base,
+      candidateRefs: [{ evidenceKey: "e1", type: "property.property" }],
+      propertyTargetSearch: { query: "Bonavista" },
+    }).success).toBe(false);
+    expect(conversationProposalSchema.safeParse({
+      ...base,
+      action: "property.get_property.v1",
+      candidateRefs: [{ evidenceKey: "e1", type: "property.property" }],
+      propertyTargetSearch: { query: "Bonavista" },
+    }).success).toBe(false);
+  });
 });

@@ -45,7 +45,7 @@ describe("Boop Interaction Pareto shadow", () => {
   });
 
   it("keeps the proposal contract compact, canonical and example-guided", () => {
-    expect(BOOP_INTERACTION_SHADOW_CONTRACT_VERSION).toBe(5);
+    expect(BOOP_INTERACTION_SHADOW_CONTRACT_VERSION).toBe(8);
     expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("GUIDE EXAMPLES");
     expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("never repeat the active property");
     expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("If the message is Spanish, write them in Spanish");
@@ -54,6 +54,7 @@ describe("Boop Interaction Pareto shadow", () => {
     expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("freshRead=required");
     expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("exactly one item: the primary entity");
     expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("Roger Closas is the lead");
+    expect(BOOP_INTERACTION_SHADOW_CONTRACT).toContain("propertyTargetSearch");
     expect(BOOP_INTERACTION_SHADOW_CONTRACT.length).toBeLessThan(6_000);
   });
 

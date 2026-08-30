@@ -8,7 +8,7 @@ import {
 
 describe("Hostmate Interaction Pareto prompt", () => {
   it("contains the frozen capability surface and the authority boundary", () => {
-    expect(HOSTMATE_INTERACTION_PROMPT_VERSION).toBe(8);
+    expect(HOSTMATE_INTERACTION_PROMPT_VERSION).toBe(9);
     expect(HOSTMATE_INTERACTION_CAPABILITIES).toHaveLength(15);
     expect(HOSTMATE_INTERACTION_ORCHESTRATION_TARGETS).toEqual(["multi-agent.lead-opportunity-analysis.v1"]);
     for (const capability of HOSTMATE_INTERACTION_CAPABILITIES) expect(HOSTMATE_INTERACTION_SYSTEM).toContain(capability);
