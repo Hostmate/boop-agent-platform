@@ -139,8 +139,12 @@ export function createInteractionLabRouter(
           ? await activeConnection.prepareVisitDraft({
               conversationId,
               proposal: result.proposal,
+              message: parsed.data.content,
               evidence,
+              openRouterApiKey: apiKey,
               model: HOSTMATE_GENERATIVE_MODEL,
+              reasoningEffort: HOSTMATE_GENERATIVE_REASONING_EFFORT,
+              fallbackModels: HOSTMATE_GENERATIVE_FALLBACK_MODELS,
             })
           : await activeConnection.executeRead({
             conversationId,

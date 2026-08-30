@@ -79,9 +79,17 @@ describe("Interaction Lab composite execution", () => {
       items: [{ id: "41", client_name: "Roger Closas" }], total: 1, page: 1, limit: 6,
       telemetry: { service: "lead.service.list", latencyMs: 2 },
     }));
-    lab.searchProperties = vi.fn(async () => ({
-      items: [{ id: "865", reference: "LORETO", title: "Piso en calle de Loreto", operation: "comprar", propertyType: "piso", price: 400000, currency: "EUR", city: "Barcelona", neighborhood: null, rooms: 3, bathrooms: 2, areaBuilt: 90, status: "activo", features: [], associatedAgent: null }],
-      total: 1, returned: 1, hasMore: false, telemetry: { service: "property.service.list", latencyMs: 3 },
+    const loreto = {
+      id: "865", reference: "LORETO", title: "Piso en calle de Loreto", address: "Calle de Loreto 10",
+      neighborhood: "Les Corts", city: "Barcelona", price: 400000, rooms: 3, bathrooms: 2,
+      areaBuilt: 90, propertySubtype: "piso", character: null, descriptionExcerpt: null,
+    };
+    lab.searchConcretePropertyCandidates = vi.fn(async () => ({
+      query: "calle de Loreto", items: [loreto], total: 1, latencyMs: 3,
+    }));
+    lab.resolveConcretePropertyCandidate = vi.fn(async () => ({
+      outcome: "selected", candidate: loreto, model: "test", latencyMs: 4,
+      inputTokens: 100, outputTokens: 10, costUsd: 0.001,
     }));
     lab.post = vi.fn(async () => ({
       success: true,
@@ -97,7 +105,10 @@ describe("Interaction Lab composite execution", () => {
     };
     const result = await lab.prepareVisitDraft({
       conversationId: "visit-search-targets",
+      message: "Agenda una visita mañana a las 10:00 para el piso en calle de Loreto con Roger Closas",
+      openRouterApiKey: "test",
       model: "test",
+      reasoningEffort: "none",
       evidence: emptyEvidence,
       proposal: {
         intent: "agendar visita", domain: "visits", action: "visits.create_visit.v1", candidateRefs: [],
@@ -108,12 +119,19 @@ describe("Interaction Lab composite execution", () => {
     });
 
     expect(lab.searchLeads).toHaveBeenCalledWith({ query: "Roger Closas", page: 1, limit: 6 });
-    expect(lab.searchProperties).toHaveBeenCalledWith({ query: "calle de Loreto" });
+    expect(lab.searchConcretePropertyCandidates).toHaveBeenCalledWith("calle de Loreto");
+    expect(lab.resolveConcretePropertyCandidate).toHaveBeenCalledWith(expect.objectContaining({
+      query: "calle de Loreto",
+      currentMessage: "Agenda una visita mañana a las 10:00 para el piso en calle de Loreto con Roger Closas",
+    }));
     expect(lab.post).toHaveBeenCalledWith("/api/v2/ai-interaction/visit-drafts", expect.objectContaining({
       leadId: "41", propertyId: "865", startDate: "2026-08-31", startTime: "10:00",
       provenance: { leadEvidenceKey: "e1", propertyEvidenceKey: "e2" },
     }));
-    expect(result).toMatchObject({ status: "completed", executionKind: "write", entities: [{ id: "41" }, { id: "865" }] });
+    expect(result).toMatchObject({
+      status: "completed", executionKind: "write", entities: [{ id: "41" }, { id: "865" }],
+      toolCalls: 2, runCount: 1, telemetry: { inputTokens: 100, outputTokens: 10, costUsd: 0.001 },
+    });
   });
 
   it("asks instead of guessing when a named Visit target is ambiguous", async () => {
@@ -122,10 +140,12 @@ describe("Interaction Lab composite execution", () => {
       items: [{ id: "41", client_name: "Roger Closas" }, { id: "42", client_name: "Roger Closas" }],
       total: 2, page: 1, limit: 6, telemetry: { service: "lead.service.list", latencyMs: 2 },
     }));
-    lab.searchProperties = vi.fn();
+    lab.searchConcretePropertyCandidates = vi.fn();
     lab.post = vi.fn();
     const result = await lab.prepareVisitDraft({
-      conversationId: "visit-ambiguous-lead", model: "test",
+      conversationId: "visit-ambiguous-lead", model: "test", reasoningEffort: "none",
+      message: "Agenda una visita mañana a las 10:00 para el piso en calle de Loreto con Roger Closas",
+      openRouterApiKey: "test",
       evidence: { currentSelection: {}, referencedEntities: [], recentResultEvidence: [], conversationHistory: [], emittedEntityRefs: [], candidateRefs: [], captureStatus: { referenced: "captured", blocks: "captured", prompt: "captured" }, entityIndex: {} },
       proposal: {
         intent: "agendar visita", domain: "visits", action: "visits.create_visit.v1", candidateRefs: [],
@@ -136,8 +156,78 @@ describe("Interaction Lab composite execution", () => {
     });
 
     expect(result).toMatchObject({ status: "needs_input", entities: [{ id: "41" }, { id: "42" }] });
-    expect(lab.searchProperties).not.toHaveBeenCalled();
+    expect(lab.searchConcretePropertyCandidates).not.toHaveBeenCalled();
     expect(lab.post).not.toHaveBeenCalled();
+  });
+
+  it("uses the model's discriminating clarification when concrete Property candidates remain ambiguous", async () => {
+    const lab = connection() as any;
+    lab.searchLeads = vi.fn(async () => ({
+      items: [{ id: "41", client_name: "Roger Closas" }], total: 1, page: 1, limit: 6,
+      telemetry: { service: "lead.service.list", latencyMs: 2 },
+    }));
+    const candidates = [
+      { id: "865", reference: "BONA-3", title: "Bonavista 3 habitaciones", address: "Carrer Bonavista 1", neighborhood: "Gràcia", city: "Barcelona", price: 450000, rooms: 3, bathrooms: 2, areaBuilt: 90, propertySubtype: "piso", character: null, descriptionExcerpt: null },
+      { id: "866", reference: "BONA-4", title: "Bonavista 4 habitaciones", address: "Carrer Bonavista 8", neighborhood: "Gràcia", city: "Barcelona", price: 520000, rooms: 4, bathrooms: 2, areaBuilt: 115, propertySubtype: "piso", character: null, descriptionExcerpt: null },
+    ];
+    lab.searchConcretePropertyCandidates = vi.fn(async () => ({ query: "Bonavista", items: candidates, total: 2, latencyMs: 3 }));
+    lab.resolveConcretePropertyCandidate = vi.fn(async () => ({
+      outcome: "needs_input", question: "¿Te refieres al de 3 habitaciones o al de 4?",
+      model: "test", latencyMs: 4, inputTokens: 120, outputTokens: 14, costUsd: 0.001,
+    }));
+    lab.post = vi.fn();
+
+    const result = await lab.prepareVisitDraft({
+      conversationId: "visit-ambiguous-property",
+      message: "Agenda una visita mañana a las 10:00 para el piso de Bonavista con Roger Closas",
+      openRouterApiKey: "test", model: "test", reasoningEffort: "none",
+      evidence: { currentSelection: {}, referencedEntities: [], recentResultEvidence: [], conversationHistory: [], emittedEntityRefs: [], candidateRefs: [], captureStatus: { referenced: "captured", blocks: "captured", prompt: "captured" }, entityIndex: {} },
+      proposal: {
+        intent: "agendar visita", domain: "visits", action: "visits.create_visit.v1", candidateRefs: [],
+        needsClarification: false, clarificationQuestion: "", delegationProposal: { kind: "none", target: "" }, freshRead: "required",
+        visitDraft: { startDate: "2026-08-31", startTime: "10:00", temporalPhrase: "mañana a las 10:00" },
+        visitTargetSearch: { leadQuery: "Roger Closas", propertyQuery: "Bonavista" },
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "needs_input",
+      summary: "¿Te refieres al de 3 habitaciones o al de 4?",
+      entities: [{ id: "865" }, { id: "866" }],
+      toolCalls: 2,
+      runCount: 1,
+    });
+    expect(lab.post).not.toHaveBeenCalled();
+  });
+
+  it("maps only the candidate explicitly selected by the LLM grounding call", async () => {
+    const lab = connection() as any;
+    const candidates = [
+      { id: "865", reference: "BONA-3", title: "Bonavista 3 habitaciones", address: "Carrer Bonavista 1", neighborhood: "Gràcia", city: "Barcelona", price: 450000, rooms: 3, bathrooms: 2, areaBuilt: 90, propertySubtype: "piso", character: null, descriptionExcerpt: null },
+      { id: "866", reference: "BONA-4", title: "Bonavista 4 habitaciones", address: "Carrer Bonavista 8", neighborhood: "Gràcia", city: "Barcelona", price: 520000, rooms: 4, bathrooms: 2, areaBuilt: 115, propertySubtype: "piso", character: null, descriptionExcerpt: null },
+    ];
+    const run = vi.fn(async (request: { prompt: string; tools: Array<{ name: string; handle: (args: Record<string, unknown>) => Promise<{ text: string; success?: boolean }> }> }) => {
+      const tool = request.tools.find((item) => item.name === "select_property_candidate")!;
+      const toolResult = await tool.handle({ candidateKey: "p2" });
+      expect(request.prompt).toContain("Bonavista 4 habitaciones");
+      expect(request.prompt).not.toContain('"id":"866"');
+      return {
+        resolvedModel: "test", latencyMs: 7,
+        detailedUsage: { inputTokens: 140, outputTokens: 12, costUsd: 0.002 },
+        toolResults: [{ toolName: tool.name, text: toolResult.text, success: toolResult.success !== false }],
+      };
+    });
+
+    const result = await lab.resolveConcretePropertyCandidate({
+      query: "Bonavista de cuatro habitaciones",
+      currentMessage: "Quiero el de Bonavista de cuatro habitaciones",
+      evidence: { currentSelection: {}, referencedEntities: [], recentResultEvidence: [], conversationHistory: [], emittedEntityRefs: [], candidateRefs: [], captureStatus: { referenced: "captured", blocks: "captured", prompt: "captured" }, entityIndex: {} },
+      search: { query: "Bonavista de cuatro habitaciones", items: candidates, total: 2, latencyMs: 3 },
+      runtime: { run }, model: "test", reasoningEffort: "none",
+    });
+
+    expect(result).toMatchObject({ outcome: "selected", candidate: { id: "866" }, inputTokens: 140, outputTokens: 12 });
+    expect(run).toHaveBeenCalledTimes(1);
   });
 
   it("executes the selected Lead Skill through the existing Boop Skill lifecycle", async () => {
